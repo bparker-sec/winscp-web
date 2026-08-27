@@ -59,4 +59,41 @@ describe('sdk client', () => {
     const { sdkProbeHost } = await import('./client');
     expect(await sdkProbeHost()).toBe(false);
   });
+
+  it('sdkGetUser returns null when getUserInfo throws', async () => {
+    mockSdk({ getUserInfo: vi.fn().mockRejectedValue(new Error('no host')) });
+    const { sdkGetUser } = await import('./client');
+    expect(await sdkGetUser()).toBeNull();
+  });
+
+  it('sdkGetBranding returns null when getBrandingAssets throws', async () => {
+    mockSdk({ getBrandingAssets: vi.fn().mockRejectedValue(new Error('x')) });
+    const { sdkGetBranding } = await import('./client');
+    expect(await sdkGetBranding()).toBeNull();
+  });
+
+  it("classifies a timeout error as reason 'timeout'", async () => {
+    mockSdk({ getToken: vi.fn().mockRejectedValue(new Error('RPC timeout: getToken')) });
+    const { sdkGetOneDriveTokenResult } = await import('./client');
+    expect(await sdkGetOneDriveTokenResult(false)).toMatchObject({ ok: false, reason: 'timeout' });
+  });
+
+  it("classifies a generic error as reason 'error'", async () => {
+    mockSdk({ getToken: vi.fn().mockRejectedValue(new Error('boom')) });
+    const { sdkGetOneDriveTokenResult } = await import('./client');
+    expect(await sdkGetOneDriveTokenResult(false)).toMatchObject({ ok: false, reason: 'error' });
+  });
+
+  it('sdkTrack swallows a synchronous throw', async () => {
+    mockSdk({ trackEvent: vi.fn(() => { throw new Error('sync'); }) });
+    const { sdkTrack } = await import('./client');
+    expect(() => sdkTrack('evt')).not.toThrow();
+  });
+
+  it('sdkTrack swallows an async rejection', async () => {
+    mockSdk({ trackEvent: vi.fn().mockRejectedValue(new Error('async')) });
+    const { sdkTrack } = await import('./client');
+    expect(() => sdkTrack('evt')).not.toThrow();
+    await Promise.resolve();
+  });
 });
