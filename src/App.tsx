@@ -6,9 +6,19 @@ import { StatusTile } from './layouts/StatusTile';
 
 function Root() {
   const layout = usePlatform();
-  if (layout.mode === 'commander') return <Commander />;
-  if (layout.mode === 'tile') return <StatusTile />;
-  return <TabbedSingle />;
+  switch (layout.mode) {
+    case 'commander':
+      return <Commander />;
+    case 'tile':
+      return <StatusTile />;
+    case 'tabbed':
+      return <TabbedSingle />;
+    default: {
+      // Compile-time guarantee that every LayoutMode is handled above.
+      const _exhaustive: never = layout.mode;
+      return _exhaustive;
+    }
+  }
 }
 
 export default function App() {

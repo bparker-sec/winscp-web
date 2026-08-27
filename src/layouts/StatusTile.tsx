@@ -9,7 +9,15 @@ export function StatusTile() {
         <span className="ml-auto text-muted">{remote?.label ?? 'no session'} ●</span>
       </div>
       <div className="text-muted">No active transfers.</div>
-      <button className="mt-auto h-7 rounded bg-accent text-accent-fg">↗ Open full app</button>
+      {/* TODO(later plan): wire to full-app navigation once host routing exists. */}
+      <button
+        className="mt-auto h-7 rounded bg-accent text-accent-fg"
+        onClick={() => {
+          /* placeholder: full-app navigation added in a later plan */
+        }}
+      >
+        ↗ Open full app
+      </button>
     </div>
   );
 }
