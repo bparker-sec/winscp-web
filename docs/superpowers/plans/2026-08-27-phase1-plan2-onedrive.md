@@ -1140,6 +1140,15 @@ In `src/layouts/StatusTile.tsx`: no MenuBar; leave as-is (it shows remote sessio
 - [ ] **Step 6:** Run `npx tsc -p tsconfig.app.json --noEmit` (expect clean) and `npx vitest run` (expect all prior tests + new ones green).
 - [ ] **Step 7:** Commit: `git add src/state src/ui src/layouts && git commit -m "feat: OneDrive connect/disconnect flow and sign-in UI"`
 
+> **Wiring fixes (applied after code review — committed code is source of truth):**
+> `connect()` suppresses internal coordinator reasons (`superseded`/`blocked`) so a
+> sign-out that races an in-flight connect doesn't surface a confusing error, and
+> `disconnect()` clears `connectError`. `refreshUser()` runs BEFORE `setSignedIn`
+> (on both connect and silent reconnect) so `OneDriveFS` is built once, not twice.
+> `AccountButton` gained a `connecting` state (disabled + "Connecting…") threaded
+> via `MenuBar`, plus a sign-out `aria-label`; `ConnectHint`'s error is `role="alert"`.
+> Render tests added: `src/ui/AccountButton.test.tsx`, `src/ui/ConnectHint.test.tsx`.
+
 ---
 
 ## Task 2F: Build + integration verification
