@@ -175,7 +175,9 @@ git commit -m "chore: project manifest and lockfile"
 - [ ] **Step 4: Write `vite.config.ts`** (static SPA + PWA, no SSR/edge)
 
 ```ts
-import { defineConfig } from 'vite';
+// `defineConfig` comes from vitest/config (a superset of vite's) so the `test`
+// block below type-checks; it re-exports Vite's config type with `test` merged.
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
