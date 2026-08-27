@@ -5,6 +5,7 @@ export const THEME_KEY = 'winscp-theme';
 /** The OS/browser preference, defaulting to light when unknown. */
 export function systemTheme(): Theme {
   try {
+    // try/catch guards SSR / non-browser eval where `window` is undefined.
     return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   } catch {
     return 'light';
