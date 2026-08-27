@@ -79,23 +79,33 @@ export class SshReader {
     return new DataView(this.buf.buffer, this.buf.byteOffset, this.buf.byteLength);
   }
 
+  private need(n: number): void {
+    if (this.off + n > this.buf.length) {
+      throw new Error(`SSH wire: unexpected end of buffer (need ${n} at offset ${this.off}, have ${this.buf.length})`);
+    }
+  }
+
   byte(): number {
+    this.need(1);
     return this.buf[this.off++];
   }
   bool(): boolean {
     return this.byte() !== 0;
   }
   uint32(): number {
+    this.need(4);
     const v = this.view().getUint32(this.off);
     this.off += 4;
     return v;
   }
   uint64(): bigint {
+    this.need(8);
     const v = this.view().getBigUint64(this.off);
     this.off += 8;
     return v;
   }
   bytes(n: number): Uint8Array {
+    this.need(n);
     const b = this.buf.subarray(this.off, this.off + n).slice();
     this.off += n;
     return b;

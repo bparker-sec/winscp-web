@@ -42,3 +42,21 @@ describe('SshWriter/SshReader round-trip', () => {
     expect(new SshReader(buf).nameList()).toEqual([]);
   });
 });
+
+describe('SshReader bounds', () => {
+  it('throws when reading past the end', () => {
+    const r = new SshReader(Uint8Array.of(1, 2));
+    expect(() => r.uint32()).toThrow();
+  });
+  it('throws when a string length exceeds the remaining buffer', () => {
+    // length prefix says 100 bytes but only 2 follow
+    const buf = new SshWriter().uint32(100).raw(Uint8Array.of(1, 2)).finish();
+    expect(() => new SshReader(buf).string()).toThrow();
+  });
+  it('still reads valid buffers correctly', () => {
+    const buf = new SshWriter().uint32(3).string('ab').finish();
+    const r = new SshReader(buf);
+    expect(r.uint32()).toBe(3);
+    expect(new TextDecoder().decode(r.string())).toBe('ab');
+  });
+});
