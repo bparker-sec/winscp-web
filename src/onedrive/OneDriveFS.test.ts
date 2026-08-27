@@ -129,3 +129,40 @@ describe('OneDriveFS openWrite', () => {
     expect(g.cancelUpload).toHaveBeenCalledWith('https://upload');
   });
 });
+
+describe('OneDriveFS openWrite streaming', () => {
+  it('streams a large known-size upload as contiguous chunks summing to total', async () => {
+    g.createUploadSession.mockResolvedValue('https://up');
+    g.putUploadChunk.mockResolvedValue(undefined);
+    const ALIGN = 320 * 1024;
+    const total = 40 * ALIGN; // 12.8 MB, well over the 4 MB simple-PUT limit
+    const fs = new OneDriveFS(auth);
+    const w = await fs.openWrite('/big.bin', total);
+    for (let i = 0; i < 4; i++) await w.write(new Uint8Array(10 * ALIGN));
+    await w.close();
+    const calls = g.putUploadChunk.mock.calls as [string, Uint8Array, number, number][];
+    expect(calls.length).toBeGreaterThan(1); // actually streamed, not one giant PUT
+    let expectedStart = 0;
+    for (const [url, bytes, start, tot] of calls) {
+      expect(url).toBe('https://up');
+      expect(tot).toBe(total);
+      expect(start).toBe(expectedStart); // contiguous, in order
+      expectedStart += bytes.byteLength;
+    }
+    expect(expectedStart).toBe(total); // every byte sent exactly once
+    expect(g.uploadSmall).not.toHaveBeenCalled();
+  });
+});
+
+describe('OneDriveFS rename edges', () => {
+  it('renames and moves at once', async () => {
+    g.patchItem.mockResolvedValue(undefined);
+    await new OneDriveFS(auth).rename('/a.txt', '/sub/b.txt');
+    expect(g.patchItem).toHaveBeenCalledWith(auth, '/a.txt', { name: 'b.txt', newParentPath: '/sub' });
+  });
+
+  it('rename to the same path is a no-op', async () => {
+    await new OneDriveFS(auth).rename('/a.txt', '/a.txt');
+    expect(g.patchItem).not.toHaveBeenCalled();
+  });
+});
