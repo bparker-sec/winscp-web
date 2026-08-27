@@ -229,16 +229,28 @@ export class SshChannel {
     await this.send(buildChannelEof(this.remoteChannel));
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
+  /** Marks the channel closed and releases anything still waiting on it. */
+  private teardown(): void {
     this.closed = true;
-    await this.send(buildChannelClose(this.remoteChannel));
-    // Unblock anything still waiting.
     while (this.writeWaiters.length > 0) {
       this.writeWaiters.shift()?.();
     }
     while (this.readWaiters.length > 0) {
       this.readWaiters.shift()?.(new Uint8Array(0));
     }
+  }
+
+  /** Local close: notify the peer, then tear down. */
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    await this.send(buildChannelClose(this.remoteChannel));
+    this.teardown();
+  }
+
+  /** Called by the dispatcher when a remote CHANNEL_CLOSE arrives for this channel. */
+  onClose(): void {
+    if (this.closed) return;
+    this.teardown();
   }
 }

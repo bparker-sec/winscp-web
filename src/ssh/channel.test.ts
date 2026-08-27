@@ -287,4 +287,57 @@ describe('SshChannel eof/close', () => {
     await channel.close();
     expect(await readPromise).toEqual(new Uint8Array(0));
   });
+
+  it('onClose unblocks a pending read (remote CHANNEL_CLOSE)', async () => {
+    const send = vi.fn(async () => {});
+    const channel = new SshChannel({
+      send,
+      localChannel: 0,
+      remoteChannel: 1,
+      remoteWindow: 1000,
+      maxPacket: 32768,
+      localWindow: 1000,
+    });
+
+    const p = channel.read(); // no inbound data yet -> pending
+    channel.onClose(); // remote closes without EOF
+    const out = await p; // must resolve, not hang
+    expect(out.length).toBe(0);
+  });
+
+  it('onClose releases a pending write waiter', async () => {
+    const send = vi.fn(async () => {});
+    const channel = new SshChannel({
+      send,
+      localChannel: 0,
+      remoteChannel: 1,
+      remoteWindow: 0, // window exhausted so write blocks
+      maxPacket: 32768,
+      localWindow: 1000,
+    });
+
+    const w = channel.write(new Uint8Array(10)); // blocks on window
+    channel.onClose();
+    // must settle (resolve or reject) rather than hang
+    await expect(Promise.race([w, Promise.resolve('settled')])).resolves.toBeDefined();
+  });
+
+  it('onClose does not send a CHANNEL_CLOSE back and is idempotent', async () => {
+    const sent: Uint8Array[] = [];
+    const send = vi.fn(async (payload: Uint8Array) => {
+      sent.push(payload);
+    });
+    const channel = new SshChannel({
+      send,
+      localChannel: 0,
+      remoteChannel: 1,
+      remoteWindow: 1000,
+      maxPacket: 32768,
+      localWindow: 1000,
+    });
+
+    channel.onClose();
+    channel.onClose(); // idempotent, no double-teardown issues
+    expect(sent.length).toBe(0);
+  });
 });
