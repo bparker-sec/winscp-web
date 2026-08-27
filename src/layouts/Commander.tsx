@@ -16,6 +16,7 @@ export function Commander() {
         sessionLabel={remote?.label ?? 'not connected'}
         theme={theme}
         signedIn={local !== null}
+        connecting={connecting}
         userName={userName}
         onConnect={connect}
         onDisconnect={disconnect}

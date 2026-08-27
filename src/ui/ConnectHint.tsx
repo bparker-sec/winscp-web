@@ -15,7 +15,7 @@ export function ConnectHint({ connecting, error, onConnect }: Props) {
       >
         {connecting ? 'Connecting…' : 'Connect OneDrive'}
       </button>
-      {error && <div className="text-danger text-[12px] max-w-xs">{error}</div>}
+      {error && <div role="alert" className="text-danger text-[12px] max-w-xs">{error}</div>}
     </div>
   );
 }

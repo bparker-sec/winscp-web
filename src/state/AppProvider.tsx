@@ -54,15 +54,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setUserName(u?.displayName ?? u?.name ?? u?.email ?? undefined);
   }, []);
 
-  // Attempt a silent reconnect on mount (no OAuth popup).
+  // Attempt a silent reconnect on mount (no OAuth popup). Fetch the user BEFORE
+  // flipping signedIn so `local` (OneDriveFS) is constructed once, not twice.
   useEffect(() => {
     let alive = true;
     trySilentOneDrive().then(async (ok) => {
+      if (!alive || !ok) return;
+      await refreshUser();
       if (!alive) return;
-      if (ok) {
-        setSignedIn(true);
-        await refreshUser();
-      }
+      setSignedIn(true);
     });
     return () => {
       alive = false;
@@ -73,17 +73,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setConnecting(true);
     setConnectError(null);
     connectOneDrive().then(async (res) => {
-      setConnecting(false);
       if (res.ok) {
-        setSignedIn(true);
         await refreshUser();
+        setSignedIn(true);
+        setConnecting(false);
       } else {
-        setConnectError(res.detail ?? 'Could not connect to OneDrive.');
+        setConnecting(false);
+        // 'superseded'/'blocked' are internal coordinator states (e.g. a sign-out
+        // raced this connect), not user-facing failures.
+        if (res.reason !== 'superseded' && res.reason !== 'blocked') {
+          setConnectError(res.detail ?? 'Could not connect to OneDrive.');
+        }
       }
     });
   }, [refreshUser]);
 
   const disconnect = useCallback(() => {
+    setConnectError(null);
     clearOneDriveSession().then(() => {
       setSignedIn(false);
       setUserName(undefined);

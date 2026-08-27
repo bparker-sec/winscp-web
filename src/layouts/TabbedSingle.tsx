@@ -19,6 +19,7 @@ export function TabbedSingle() {
         theme={theme}
         compact
         signedIn={local !== null}
+        connecting={connecting}
         userName={userName}
         onConnect={connect}
         onDisconnect={disconnect}

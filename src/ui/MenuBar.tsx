@@ -7,18 +7,34 @@ interface Props {
   theme: ThemeApi;
   compact?: boolean;
   signedIn: boolean;
+  connecting?: boolean;
   userName?: string;
   onConnect: () => void;
   onDisconnect: () => void;
 }
 
-export function MenuBar({ sessionLabel, theme, compact, signedIn, userName, onConnect, onDisconnect }: Props) {
+export function MenuBar({
+  sessionLabel,
+  theme,
+  compact,
+  signedIn,
+  connecting,
+  userName,
+  onConnect,
+  onDisconnect,
+}: Props) {
   return (
     <div className="flex items-center gap-3 px-3 h-9 bg-surface border-b border-border select-none">
       <span className="font-semibold">WinSCP Web</span>
       {!compact && <span className="text-muted">Session: {sessionLabel}</span>}
       <div className="ml-auto flex items-center gap-1">
-        <AccountButton signedIn={signedIn} userName={userName} onConnect={onConnect} onDisconnect={onDisconnect} />
+        <AccountButton
+          signedIn={signedIn}
+          connecting={connecting}
+          userName={userName}
+          onConnect={onConnect}
+          onDisconnect={onDisconnect}
+        />
         <button
           className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 text-text"
           title="Toggle light/dark"
