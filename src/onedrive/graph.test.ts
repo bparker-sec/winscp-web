@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   encodePath,
   childrenUrl,
@@ -7,6 +7,10 @@ import {
   uploadSessionUrl,
   parentChildrenUrl,
   driveItemToEntry,
+  listChildren,
+  getItem,
+  GraphError,
+  deleteItem,
   type DriveItem,
 } from './graph';
 
@@ -53,5 +57,86 @@ describe('driveItemToEntry', () => {
     expect(e.kind).toBe('file');
     expect(e.size).toBe(12);
     expect(e.mtime).toBe(Date.parse('2020-01-02T03:04:05Z'));
+  });
+});
+
+describe('graphFetch network behavior', () => {
+  const auth = (tokens: string[]) => {
+    let i = 0;
+    return { getToken: vi.fn(async () => tokens[Math.min(i++, tokens.length - 1)] ?? null) };
+  };
+  afterEach(() => vi.restoreAllMocks());
+
+  it('follows @odata.nextLink pagination', async () => {
+    const pages = [
+      { value: [{ id: '1', name: 'a' }], '@odata.nextLink': 'https://next' },
+      { value: [{ id: '2', name: 'b' }] },
+    ];
+    let call = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          ({ ok: true, status: 200, json: async () => pages[call++] }) as unknown as Response,
+      ),
+    );
+    const items = await listChildren(auth(['T']), '/');
+    expect(items.map((i) => i.name)).toEqual(['a', 'b']);
+    expect((globalThis.fetch as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(2);
+  });
+
+  it('retries once with a fresh token on 401', async () => {
+    let n = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        n++;
+        if (n === 1) {
+          return {
+            ok: false,
+            status: 401,
+            statusText: 'Unauthorized',
+            json: async () => ({}),
+          } as unknown as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: '1',
+            name: 'x',
+            __auth: (init.headers as Record<string, string>).Authorization,
+          }),
+        } as unknown as Response;
+      }),
+    );
+    const item = await getItem(auth(['STALE', 'FRESH']), '/x');
+    expect(item.name).toBe('x');
+    const calls = (globalThis.fetch as unknown as { mock: { calls: [string, RequestInit][] } })
+      .mock.calls;
+    expect(calls.length).toBe(2);
+    expect((calls[1][1].headers as Record<string, string>).Authorization).toContain('FRESH');
+  });
+
+  it('throws GraphError on a non-ok, non-401 response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          ({
+            ok: false,
+            status: 404,
+            statusText: 'Not Found',
+            json: async () => ({ error: { message: 'gone' } }),
+          }) as unknown as Response,
+      ),
+    );
+    await expect(getItem(auth(['T']), '/missing')).rejects.toBeInstanceOf(GraphError);
+  });
+
+  it('refuses to delete the drive root', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    await expect(deleteItem(auth(['T']), '/')).rejects.toMatchObject({ status: 400 });
+    expect((globalThis.fetch as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(0);
   });
 });
