@@ -249,3 +249,27 @@ Pure, deterministic units where the value is highest:
 - `@noble/curves`, `@noble/ciphers`, `@noble/hashes` — SSH crypto.
 - Dev: `vite`, `@vitejs/plugin-react`, `typescript`, `tailwindcss`, `postcss`, `autoprefixer`,
   `vite-plugin-pwa`, `vitest`, `jsdom`, `@types/*`.
+
+## 11. Roadmap — Future Phases (the deferred work)
+
+Everything cut from Phase 1 is captured here as the planned next steps. Each phase is its own
+spec → plan → implementation cycle. The `fs/FileSystem` seam (§3.2) is designed so new protocols
+add an implementation without changing the transfer engine or UI.
+
+- **Phase 2 — FTP / FTPS.** Add an `FtpFS` over the SDK `tcp` API: control channel + passive-mode
+  data channel, `AUTH TLS`/implicit-FTPS where the host TCP proxy supports TLS, `LIST`/`MLSD`
+  parsing, `RETR`/`STOR`/`RNFR`+`RNTO`/`DELE`/`MKD`/`RMD`. Reuses the transfer engine and connection
+  manager unchanged.
+- **Phase 3 — S3.** Add an `S3FS` over HTTPS `fetch` with in-browser AWS Signature V4 signing;
+  bucket/prefix browsing, multipart upload for large objects, CORS guidance. Connection manager
+  gains access-key/secret/region/endpoint fields (stored in the same encrypted vault).
+- **Phase 4 — WebDAV.** Add a `WebDavFS` over `fetch`: `PROPFIND`/`GET`/`PUT`/`MKCOL`/`DELETE`/
+  `MOVE`/`COPY`, Basic/Digest auth.
+- **Phase 5 — Multiple simultaneous session tabs.** Lift the single-active-session limit (§7):
+  session tab bar, per-tab remote `FileSystem`, shared transfer queue across sessions.
+- **Phase 6 — Directory synchronize / mirror.** WinSCP-style compare + one-way/two-way sync between
+  a local (OneDrive) and remote tree, with a preview/diff before applying.
+- **Later / optional.** In-app file editing hand-off (delegating to the notepad++ app rather than
+  rebuilding an editor) and an interactive terminal/shell channel over the existing SSH transport.
+
+SSH agent forwarding remains permanently out (no agent socket exists in a pure browser SPA).
