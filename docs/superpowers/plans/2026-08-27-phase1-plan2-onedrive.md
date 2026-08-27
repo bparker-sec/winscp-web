@@ -329,11 +329,17 @@ async function safeErrorText(res: Response): Promise<string> {
 }
 
 async function graphFetch(auth: Authable, url: string, init: RequestInit = {}): Promise<Response> {
+  // Silent token first; force an interactive prompt only as a last resort. All
+  // OneDriveFS callers are user-initiated, so a re-auth prompt here is acceptable.
   let token = await auth.getToken(false);
-  if (!token) token = await auth.getToken(true);
+  let forced = false;
+  if (!token) {
+    token = await auth.getToken(true);
+    forced = true;
+  }
   if (!token) throw new GraphError(401, 'Not signed in to OneDrive.');
   let res = await fetch(url, withAuth(init, token));
-  if (res.status === 401) {
+  if (res.status === 401 && !forced) {
     const fresh = await auth.getToken(true);
     if (fresh) res = await fetch(url, withAuth(init, fresh));
   }
@@ -369,6 +375,7 @@ export async function createFolder(auth: Authable, parentPath: string, name: str
 }
 
 export async function deleteItem(auth: Authable, path: string): Promise<void> {
+  if (isRoot(path)) throw new GraphError(400, 'Refusing to delete the drive root.');
   await graphFetch(auth, itemUrl(path).split('?')[0], { method: 'DELETE' });
 }
 
@@ -378,8 +385,9 @@ export async function patchItem(
   path: string,
   changes: { name?: string; newParentPath?: string },
 ): Promise<void> {
+  if (isRoot(path)) throw new GraphError(400, 'Refusing to rename/move the drive root.');
   const body: Record<string, unknown> = {};
-  if (changes.name) body.name = changes.name;
+  if (changes.name !== undefined) body.name = changes.name;
   if (changes.newParentPath !== undefined) {
     const p = encodePath(changes.newParentPath);
     body.parentReference = { path: p ? `/drive/root:/${p}` : '/drive/root:' };
