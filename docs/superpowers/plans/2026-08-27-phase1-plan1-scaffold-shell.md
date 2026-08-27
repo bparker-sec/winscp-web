@@ -71,6 +71,8 @@ protocol exists.
     "@noble/ciphers": "^1.0.0"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/react": "^16.1.0",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
@@ -263,6 +265,16 @@ export default {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>WinSCP Web</title>
+    <script>
+      // Apply the saved/system theme before first paint to avoid a theme flash.
+      try {
+        var t = localStorage.getItem('winscp-theme');
+        if (t !== 'light' && t !== 'dark') {
+          t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>
@@ -570,24 +582,24 @@ export function useTheme(): ThemeApi {
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
+    saveTheme(theme);
   }, [theme]);
 
-  const set = useCallback((t: Theme) => {
-    setThemeState(t);
-    saveTheme(t);
-  }, []);
-
-  const toggle = useCallback(() => {
-    setThemeState((prev) => {
-      const next: Theme = prev === 'dark' ? 'light' : 'dark';
-      saveTheme(next);
-      return next;
-    });
-  }, []);
+  const set = useCallback((t: Theme) => setThemeState(t), []);
+  const toggle = useCallback(
+    () => setThemeState((prev) => (prev === 'dark' ? 'light' : 'dark')),
+    [],
+  );
 
   return { theme, toggle, set };
 }
 ```
+
+Note: persistence lives in the effect (not the state updater) so the updater
+stays pure under React StrictMode. A companion test `src/theme/useTheme.test.tsx`
+(using `@testing-library/react` `renderHook`) verifies mount-applies-attribute,
+toggle-flips-and-persists, and set-persists. `@testing-library/react` +
+`@testing-library/dom` are added to devDependencies for this.
 
 - [ ] **Step 2: Commit**
 
