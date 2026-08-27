@@ -1,0 +1,37 @@
+{
+  "name": "winscp-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "WinSCP Web — a client-side PWA SFTP/file-transfer client that uses OneDrive as the local side, delivered for the Island browser via the AI app host.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc -b --noEmit",
+    "lock": "npm install --package-lock-only --ignore-scripts --no-audit"
+  },
+  "dependencies": {
+    "ai-publish-sdk": "^1.9.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "@noble/hashes": "^1.5.0",
+    "@noble/curves": "^1.6.0",
+    "@noble/ciphers": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "jsdom": "^25.0.1",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vite-plugin-pwa": "^0.21.1",
+    "vitest": "^2.1.8"
+  }
+}
