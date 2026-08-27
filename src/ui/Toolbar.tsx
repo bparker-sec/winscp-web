@@ -12,6 +12,7 @@ function TBtn({ label, icon, onClick }: { label: string; icon: React.ReactNode; 
   return (
     <button
       onClick={onClick}
+      aria-label={label}
       className="flex items-center gap-1 px-2 h-7 rounded text-text hover:bg-black/5 dark:hover:bg-white/10"
     >
       {icon}

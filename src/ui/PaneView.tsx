@@ -41,10 +41,13 @@ export function PaneView({ fs, header }: Props) {
   }, [fs, cwd]);
 
   const rows = useMemo(() => {
-    const sorted = [...entries];
-    if (sortKey === 'size') sorted.sort((a, b) => (a.size ?? 0) - (b.size ?? 0));
-    else if (sortKey === 'mtime') sorted.sort((a, b) => (a.mtime ?? 0) - (b.mtime ?? 0));
-    return sorted;
+    const dirRank = (e: FsEntry) => (e.kind === 'dir' ? 0 : 1);
+    return [...entries].sort((a, b) => {
+      if (dirRank(a) !== dirRank(b)) return dirRank(a) - dirRank(b); // folders first, always
+      if (sortKey === 'size') return (a.size ?? 0) - (b.size ?? 0);
+      if (sortKey === 'mtime') return (a.mtime ?? 0) - (b.mtime ?? 0);
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
   }, [entries, sortKey]);
 
   return (
@@ -68,7 +71,7 @@ export function PaneView({ fs, header }: Props) {
             📁 ..
           </button>
         )}
-        {error && <div className="px-2 py-2 text-red-500">{error}</div>}
+        {error && <div className="px-2 py-2 text-danger">{error}</div>}
         {rows.map((e) => (
           <div
             key={e.path}

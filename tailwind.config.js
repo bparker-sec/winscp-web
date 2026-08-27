@@ -12,6 +12,7 @@ export default {
         muted: 'var(--muted)',
         accent: 'var(--accent)',
         'accent-fg': 'var(--accent-fg)',
+        danger: 'var(--danger)',
       },
       fontFamily: {
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],

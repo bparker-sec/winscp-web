@@ -10,6 +10,7 @@
   --muted: #667085;
   --accent: #2563eb;
   --accent-fg: #ffffff;
+  --danger: #dc2626;
 }
 
 :root[data-theme='dark'] {
@@ -20,6 +21,7 @@
   --muted: #93a0b5;
   --accent: #3b82f6;
   --accent-fg: #ffffff;
+  --danger: #f87171;
 }
 
 html, body, #root {

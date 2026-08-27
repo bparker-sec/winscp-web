@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useEffect, useState } from 'react';
 
 interface Props {
   ratio: number; // 0..1 width fraction of the left pane
@@ -6,36 +6,34 @@ interface Props {
 }
 
 export function Splitter({ ratio, onRatio }: Props) {
-  const dragging = useRef(false);
+  const [dragging, setDragging] = useState(false);
 
-  const onMove = useCallback(
-    (e: MouseEvent) => {
-      if (!dragging.current) return;
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e: MouseEvent) => {
       const r = Math.min(0.8, Math.max(0.2, e.clientX / window.innerWidth));
       onRatio(r);
-    },
-    [onRatio],
-  );
-
-  const onUp = useCallback(() => {
-    dragging.current = false;
-    window.removeEventListener('mousemove', onMove);
-    window.removeEventListener('mouseup', onUp);
-  }, [onMove]);
-
-  const onDown = useCallback(() => {
-    dragging.current = true;
+    };
+    const stop = () => setDragging(false);
     window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  }, [onMove, onUp]);
+    window.addEventListener('mouseup', stop);
+    window.addEventListener('blur', stop); // end the drag if the mouseup is lost off-window
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', stop);
+      window.removeEventListener('blur', stop);
+    };
+  }, [dragging, onRatio]);
 
   return (
     <div
       role="separator"
       aria-orientation="vertical"
-      onMouseDown={onDown}
+      onMouseDown={() => setDragging(true)}
       title={`${Math.round(ratio * 100)}%`}
-      className="w-1 cursor-col-resize bg-border hover:bg-accent transition-colors"
+      className={`w-1 cursor-col-resize transition-colors ${
+        dragging ? 'bg-accent' : 'bg-border hover:bg-accent'
+      }`}
     />
   );
 }
