@@ -62,6 +62,7 @@ export type { UserInfo, BrandingAssets };
 const ONEDRIVE = 'onedrive';
 const INTERACTIVE_TIMEOUT_MS = 120_000;
 const HOST_PROBE_TIMEOUT_MS = 4_000;
+const SILENT_TIMEOUT_MS = 8_000; // bound host-absent stalls (SDK default is 15s)
 
 /** True when a host is actually answering RPC (probed, not inferred from frames). */
 export async function sdkProbeHost(): Promise<boolean> {
@@ -75,7 +76,7 @@ export async function sdkProbeHost(): Promise<boolean> {
 
 export async function sdkGetUser(): Promise<UserInfo | null> {
   try {
-    return await getUserInfo();
+    return await withTimeout(() => getUserInfo(), HOST_PROBE_TIMEOUT_MS);
   } catch {
     return null;
   }
@@ -83,7 +84,7 @@ export async function sdkGetUser(): Promise<UserInfo | null> {
 
 export type OneDriveTokenResult =
   | { ok: true; token: string }
-  | { ok: false; reason: 'no_host' | 'no_token' | 'timeout' | 'error'; detail?: string };
+  | { ok: false; reason: 'no_token' | 'timeout' | 'error'; detail?: string };
 
 /** Acquire a OneDrive OAuth token via the host, reporting WHY it failed. */
 export async function sdkGetOneDriveTokenResult(
@@ -93,7 +94,7 @@ export async function sdkGetOneDriveTokenResult(
     const call = () => getToken(ONEDRIVE, { interactive });
     const res = interactive
       ? await withTimeout(call, INTERACTIVE_TIMEOUT_MS)
-      : await call();
+      : await withTimeout(call, SILENT_TIMEOUT_MS);
     if (res?.token) return { ok: true, token: res.token };
     return { ok: false, reason: 'no_token' };
   } catch (e) {
@@ -105,7 +106,7 @@ export async function sdkGetOneDriveTokenResult(
 /** Clear the host-managed OneDrive session. Returns true only on confirmed clear. */
 export async function sdkClearOneDriveResult(): Promise<boolean> {
   try {
-    await clearToken(ONEDRIVE);
+    await withTimeout(() => clearToken(ONEDRIVE), SILENT_TIMEOUT_MS);
     return true;
   } catch {
     return false;
@@ -114,7 +115,7 @@ export async function sdkClearOneDriveResult(): Promise<boolean> {
 
 export async function sdkGetBranding(): Promise<BrandingAssets | null> {
   try {
-    return await getBrandingAssets();
+    return await withTimeout(() => getBrandingAssets(), HOST_PROBE_TIMEOUT_MS);
   } catch {
     return null;
   }
