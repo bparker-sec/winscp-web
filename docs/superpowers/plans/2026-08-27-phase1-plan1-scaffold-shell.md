@@ -1285,6 +1285,15 @@ git add src/ui
 git commit -m "feat: thick-app shell primitives (menu, toolbar, panes, splitter, queue)"
 ```
 
+> **Shell fixes (applied after code review — committed code is source of truth):**
+> `Splitter` was rewritten to drive its drag from a `useEffect` gated on a
+> `dragging` state so listeners are always cleaned up on unmount and a `blur`
+> handler ends the drag if the mouseup is lost off-window (fixes a real leak).
+> `PaneView`'s sort keeps folders first under every sort key. A themed `--danger`
+> token was added (`src/index.css` + `tailwind.config.js`) and the error text uses
+> `text-danger` instead of a hardcoded red. Toolbar buttons gained `aria-label`
+> for the icon-only (sub-`sm`) state.
+
 ---
 
 ## Task 10: App context provider
