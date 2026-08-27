@@ -40,6 +40,25 @@ describe('none-cipher packet round-trip', () => {
     });
   }
 
+  it('throws when the padding_length byte is corrupted beyond packet_length - 1', async () => {
+    const payload = payloadOf(10);
+    const wire = encodePacket(payload, new NoneCipher(), 0);
+    const tampered = wire.slice();
+    const packetLength = new DataView(tampered.buffer, tampered.byteOffset, 4).getUint32(0);
+    tampered[4] = packetLength; // padding_length > packetLength - 1
+    await expect(readPacket(streamOf(tampered), new NoneCipher(), 0)).rejects.toThrow();
+  });
+
+  it('throws when the wire length header exceeds MAX_PACKET_LENGTH, without reading a bogus body', async () => {
+    const bogusLength = new Uint8Array(4);
+    new DataView(bogusLength.buffer).setUint32(0, 300 * 1024); // > 256 KiB cap
+    // Only the 4 length bytes are available; if readPacket tried to read the
+    // (bogus, huge) body before validating, this would hang/throw on the
+    // socket running dry rather than on the length check itself.
+    const stream = streamOf(bogusLength);
+    await expect(readPacket(stream, new NoneCipher(), 0)).rejects.toThrow(/packet length out of range/i);
+  });
+
   it('satisfies the none-cipher padding invariants', () => {
     for (const len of [0, 1, 5, 8, 20, 100]) {
       const payload = payloadOf(len);

@@ -42,6 +42,9 @@ export class GcmCipher {
 
 const GCM_TAG_LEN = 16;
 
+// OpenSSH's PACKET_MAX_SIZE. Reject larger lengths before buffering (anti-DoS).
+const MAX_PACKET_LENGTH = 256 * 1024;
+
 /** Compute a padding length >= 4 such that `base + padding` is a multiple of `blockSize`. */
 function paddingLengthFor(base: number, blockSize: number): number {
   let padding = blockSize - (base % blockSize);
@@ -92,10 +95,16 @@ export async function readPacket(stream: ByteStream, cipher: Cipher, seq: number
   void seq;
   const lengthBytes = await stream.readExactly(4);
   const packetLength = new DataView(lengthBytes.buffer, lengthBytes.byteOffset, 4).getUint32(0);
+  if (packetLength < 1 || packetLength > MAX_PACKET_LENGTH) {
+    throw new Error(`SSH packet length out of range: ${packetLength}`);
+  }
 
   if (cipher.kind === 'none') {
     const body = await stream.readExactly(packetLength);
     const paddingLength = body[0];
+    if (paddingLength < 4 || paddingLength > packetLength - 1) {
+      throw new Error(`SSH padding_length out of range: ${paddingLength}`);
+    }
     const payloadLength = packetLength - 1 - paddingLength;
     return body.subarray(1, 1 + payloadLength);
   }
@@ -103,6 +112,11 @@ export async function readPacket(stream: ByteStream, cipher: Cipher, seq: number
   const ciphertextAndTag = await stream.readExactly(packetLength + GCM_TAG_LEN);
   const plaintext = cipher.open(lengthBytes, ciphertextAndTag);
   const paddingLength = plaintext[0];
+  // gcmOpen has already authenticated these bytes, but an authenticated peer can
+  // still send a malformed padding_length, so validate before slicing.
+  if (paddingLength < 4 || paddingLength > packetLength - 1) {
+    throw new Error(`SSH padding_length out of range: ${paddingLength}`);
+  }
   const payloadLength = packetLength - 1 - paddingLength;
   return plaintext.subarray(1, 1 + payloadLength);
 }
