@@ -908,6 +908,17 @@ git add src/fs/FileSystem.ts src/fs/MockFS.ts src/fs/MockFS.test.ts
 git commit -m "feat: FileSystem interface, path helpers, and MockFS"
 ```
 
+> **Interface hardening (applied after code review — see the committed
+> `src/fs/FileSystem.ts` as the source of truth):** the `FileSystem` seam gained
+> a typed `FsError { code }` (thrown by all implementations for `not-found` /
+> `exists` / `not-empty` / `not-a-file` / `permission` / `unsupported` / `io`),
+> a `WriteHandle.abort()` for resumable-upload rollback, brief JSDoc contracts on
+> each method, and a widened `FsKind` (`onedrive|sftp|s3|webdav|ftp|mock`).
+> Cancellation is cooperative (stop reading + `close()`/`abort()`), deliberately
+> not an `AbortSignal` on every method. `MockFS` throws `FsError`, implements
+> `abort()`, guards removing root, and no longer re-exports path helpers (import
+> them from `FileSystem.ts`). Its test suite was expanded to pin these contracts.
+
 ---
 
 ## Task 8: Global styles and theme tokens
