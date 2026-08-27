@@ -14,6 +14,13 @@ protocol exists.
 
 **Tech Stack:** Vite 5, React 18, TypeScript 5, Tailwind 3, vite-plugin-pwa, Vitest + jsdom.
 
+**Status:** ✅ Implemented on branch `build/phase1-scaffold` via subagent-driven development
+(implementer + spec reviewer + code-quality reviewer per major step). `npm run build` produces a
+static-only `dist/`; `npm test` is green (29 tests). Several review-driven improvements were folded
+in (see the inline notes below): the `vitest/config` build fix, hardened `FileSystem` contract,
+robust `Splitter` cleanup, theme FOUC guard + `useTheme` tests, folders-first sort, and an
+exhaustive layout switch.
+
 ---
 
 ## File Structure
