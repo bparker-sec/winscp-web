@@ -677,8 +677,9 @@ export class OneDriveFS implements FileSystem {
           const buf = await downloadRange(auth, path, offset, offset + want - 1);
           const bytes = new Uint8Array(buf);
           into.set(bytes.subarray(0, want));
-          offset += bytes.byteLength;
-          return bytes.byteLength;
+          const got = Math.min(bytes.byteLength, want);
+          offset += got;
+          return got;
         } catch (e) {
           throw mapError(e);
         }
@@ -725,16 +726,25 @@ export class OneDriveFS implements FileSystem {
       return url;
     };
     return {
+      // Callers must await each write() before the next; memory stays bounded to
+      // roughly one caller chunk + FLUSH_AT.
       async write(chunk) {
         try {
           pending = concat([pending, chunk]);
-          const alignedReady = Math.floor(pending.byteLength / ALIGN) * ALIGN;
-          // Only flush full-aligned blocks that are NOT the final bytes.
-          if (alignedReady >= ALIGN && sent + alignedReady < total) {
+          if (total <= SIMPLE_LIMIT) return; // small file: single PUT at close()
+          if (pending.byteLength < FLUSH_AT) return; // batch PUTs to ~FLUSH_AT
+          let flush = Math.floor(pending.byteLength / ALIGN) * ALIGN;
+          // Never flush the block that would complete the session — reserve the
+          // final aligned block (and any tail) for close().
+          if (sent + flush >= total) {
+            const remaining = total - sent;
+            flush = Math.max(0, Math.floor((remaining - 1) / ALIGN) * ALIGN);
+          }
+          if (flush >= ALIGN) {
             const u = await ensure();
-            await putUploadChunk(u, pending.subarray(0, alignedReady), sent, total);
-            sent += alignedReady;
-            pending = pending.slice(alignedReady);
+            await putUploadChunk(u, pending.subarray(0, flush), sent, total);
+            sent += flush;
+            pending = pending.slice(flush);
           }
         } catch (e) {
           throw mapError(e);
@@ -742,7 +752,7 @@ export class OneDriveFS implements FileSystem {
       },
       async close() {
         try {
-          if (total <= SIMPLE_LIMIT && sent === 0) {
+          if (total <= SIMPLE_LIMIT) {
             await uploadSmall(auth, path, pending);
             return;
           }
