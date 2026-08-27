@@ -1,6 +1,5 @@
 import {
-  joinPath,
-  parentPath,
+  FsError,
   sortEntries,
   type FileSystem,
   type FsEntry,
@@ -31,9 +30,7 @@ export class MockFS implements FileSystem {
 
   private seedDir(path: string): void {
     const name = path === '/' ? '/' : path.slice(path.lastIndexOf('/') + 1);
-    this.nodes.set(path, {
-      entry: { name, path, kind: 'dir', mtime: 0 },
-    });
+    this.nodes.set(path, { entry: { name, path, kind: 'dir', mtime: 0 } });
   }
 
   private seedFile(path: string, text: string): void {
@@ -60,19 +57,22 @@ export class MockFS implements FileSystem {
 
   async stat(path: string): Promise<FsEntry> {
     const node = this.nodes.get(path);
-    if (!node) throw new Error(`No such path: ${path}`);
+    if (!node) throw new FsError('not-found', `No such path: ${path}`);
     return node.entry;
   }
 
   async mkdir(path: string): Promise<void> {
-    if (this.nodes.has(path)) throw new Error(`Exists: ${path}`);
+    if (this.nodes.has(path)) throw new FsError('exists', `Exists: ${path}`);
     const name = path.slice(path.lastIndexOf('/') + 1);
     this.nodes.set(path, { entry: { name, path, kind: 'dir', mtime: Date.now() } });
   }
 
+  // NOTE: renaming a directory does NOT rewrite the paths of its children (a mock
+  // limitation; real adapters move server-side). The shell renames files, not
+  // populated directories, so this is acceptable for the dev double.
   async rename(from: string, to: string): Promise<void> {
     const node = this.nodes.get(from);
-    if (!node) throw new Error(`No such path: ${from}`);
+    if (!node) throw new FsError('not-found', `No such path: ${from}`);
     this.nodes.delete(from);
     const name = to.slice(to.lastIndexOf('/') + 1);
     node.entry = { ...node.entry, name, path: to };
@@ -80,11 +80,12 @@ export class MockFS implements FileSystem {
   }
 
   async remove(path: string, recursive: boolean): Promise<void> {
+    if (path === '/') throw new FsError('unsupported', 'Cannot remove the root directory');
     const node = this.nodes.get(path);
-    if (!node) throw new Error(`No such path: ${path}`);
+    if (!node) throw new FsError('not-found', `No such path: ${path}`);
     if (node.entry.kind === 'dir') {
       const children = await this.list(path);
-      if (children.length && !recursive) throw new Error('Directory not empty');
+      if (children.length && !recursive) throw new FsError('not-empty', 'Directory not empty');
       for (const c of children) await this.remove(c.path, true);
     }
     this.nodes.delete(path);
@@ -96,8 +97,9 @@ export class MockFS implements FileSystem {
 
   async openRead(path: string): Promise<ReadHandle> {
     const node = this.nodes.get(path);
-    if (!node || node.entry.kind !== 'file' || !node.data) {
-      throw new Error(`Not a file: ${path}`);
+    if (!node) throw new FsError('not-found', `No such path: ${path}`);
+    if (node.entry.kind !== 'file' || !node.data) {
+      throw new FsError('not-a-file', `Not a file: ${path}`);
     }
     const data = node.data;
     let offset = 0;
@@ -135,9 +137,9 @@ export class MockFS implements FileSystem {
           data,
         });
       },
+      async abort() {
+        chunks.length = 0; // never committed unless close() ran
+      },
     };
   }
 }
-
-// Re-export helpers consumers expect from here for convenience.
-export { joinPath, parentPath };
