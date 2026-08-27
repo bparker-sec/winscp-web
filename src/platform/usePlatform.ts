@@ -27,6 +27,9 @@ export function usePlatform(): Layout {
       });
     };
     measure();
+    // The host container can settle to its real size a few frames after mount
+    // without firing a resize event, so re-measure across the next frame and
+    // a few short delays to catch the final size.
     const raf = requestAnimationFrame(measure);
     const timers = [
       window.setTimeout(measure, 120),

@@ -17,6 +17,8 @@ export const COMMANDER_MIN_H = 360;
 export const TILE_MAX_H = 220;
 
 export function classifyLayout(width: number, height: number): Layout {
+  // Tile is gated on height only: all real hosting contexts (incl. the 360px-wide side panel)
+  // are wide enough to browse; a pathologically narrow width is out of scope.
   if (height < TILE_MAX_H) return { mode: 'tile', width, height };
   if (width >= COMMANDER_MIN_W && height >= COMMANDER_MIN_H) {
     return { mode: 'commander', width, height };
