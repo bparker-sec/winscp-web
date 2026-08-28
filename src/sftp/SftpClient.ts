@@ -112,13 +112,21 @@ export class SftpClient {
     }
   }
 
-  /** Register a pending waiter for `id`, THEN write — the resolver must exist before any response can arrive. */
-  private async request(bytes: Uint8Array, id: number): Promise<SftpPacket> {
-    const promise = new Promise<SftpPacket>((resolve, reject) => {
+  /**
+   * Register a pending waiter for `id`, THEN write — the resolver must exist
+   * before any response can arrive. If the write itself fails, the pending
+   * entry is dropped and THIS request's promise is rejected (never orphaned
+   * in `this.pending`), so callers always get a settled promise to await.
+   */
+  private request(bytes: Uint8Array, id: number): Promise<SftpPacket> {
+    return new Promise<SftpPacket>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
+      this.channel.write(bytes).catch((err: unknown) => {
+        if (this.pending.delete(id)) {
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      });
     });
-    await this.channel.write(bytes);
-    return promise;
   }
 
   private expectStatus(pkt: SftpPacket): void {
@@ -146,22 +154,19 @@ export class SftpClient {
     this.statusErrorOrUnexpected(pkt, 'HANDLE');
   }
 
-  /**
-   * Overloaded: `close(handle)` sends SFTP CLOSE for a file/dir handle.
-   * `close()` (no args) tears down the whole client — closes the channel and
-   * rejects any still-pending requests.
-   */
-  async close(handle?: Uint8Array): Promise<void> {
-    if (handle === undefined) {
-      await this.channel.close();
-      const error = new Error('SFTP client closed');
-      for (const waiter of this.pending.values()) waiter.reject(error);
-      this.pending.clear();
-      return;
-    }
+  /** SFTP CLOSE for a file/dir handle (from `open`/`opendir`). */
+  async closeHandle(handle: Uint8Array): Promise<void> {
     const id = this.nextId();
     const pkt = await this.request(buildClose(id, handle), id);
     this.expectStatus(pkt);
+  }
+
+  /** Tears down the whole client: closes the channel and rejects any still-pending requests. */
+  async close(): Promise<void> {
+    await this.channel.close();
+    const error = new Error('SFTP client closed');
+    for (const waiter of this.pending.values()) waiter.reject(error);
+    this.pending.clear();
   }
 
   async read(handle: Uint8Array, offset: number, length: number): Promise<Uint8Array | null> {

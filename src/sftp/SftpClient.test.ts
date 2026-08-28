@@ -228,6 +228,40 @@ describe('SftpClient', () => {
     await expect(statPromise).rejects.toThrow();
   });
 
+  it('request() cleans up the pending entry when channel.write() rejects, instead of leaking it', async () => {
+    const channel = new FakeChannel();
+    const client = await initClient(channel);
+
+    const writeError = new Error('write failed: socket gone');
+    const originalWrite = channel.write.bind(channel);
+    let failNextWrite = true;
+    channel.write = async (bytes: Uint8Array) => {
+      if (failNextWrite) {
+        failNextWrite = false;
+        throw writeError;
+      }
+      return originalWrite(bytes);
+    };
+
+    await expect(client.stat('/tmp/foo')).rejects.toThrow(/write failed/);
+    expect((client as unknown as { pending: Map<number, unknown> }).pending.size).toBe(0);
+
+    // Client remains usable afterward: a subsequent request with a working
+    // write should still resolve normally (no stuck/duplicate id state).
+    channel.enqueue(attrsPacket(2, { size: 3 }));
+    await expect(client.stat('/tmp/bar')).resolves.toEqual({ size: 3 });
+  });
+
+  it('closeHandle() sends SFTP CLOSE for a handle and expects STATUS OK', async () => {
+    const channel = new FakeChannel();
+    const client = await initClient(channel);
+    const handle = new TextEncoder().encode('h1');
+
+    channel.enqueue(statusPacket(1, SSH_FX_OK));
+    await expect(client.closeHandle(handle)).resolves.toBeUndefined();
+    expect(channel.closeCalls).toBe(0); // closeHandle must not tear down the channel
+  });
+
   it('write() resolves on STATUS OK', async () => {
     const channel = new FakeChannel();
     const client = await initClient(channel);
