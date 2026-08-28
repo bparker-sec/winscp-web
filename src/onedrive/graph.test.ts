@@ -11,6 +11,7 @@ import {
   getItem,
   GraphError,
   deleteItem,
+  getUploadSessionStatus,
   type DriveItem,
 } from './graph';
 
@@ -138,5 +139,74 @@ describe('graphFetch network behavior', () => {
     vi.stubGlobal('fetch', vi.fn());
     await expect(deleteItem(auth(['T']), '/')).rejects.toMatchObject({ status: 400 });
     expect((globalThis.fetch as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(0);
+  });
+});
+
+describe('getUploadSessionStatus', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('parses the start of the first nextExpectedRanges entry, unauthenticated', async () => {
+    const fetchMock = vi.fn(
+      async (_url?: string, _init?: RequestInit) =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => ({ nextExpectedRanges: ['327680-'] }),
+        }) as unknown as Response,
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const status = await getUploadSessionStatus('https://upload');
+    expect(status).toEqual({ nextOffset: 327680 });
+    // No Authorization header: the uploadUrl is pre-authenticated.
+    const init = fetchMock.mock.calls[0][1];
+    expect((init?.headers as Record<string, string> | undefined)?.Authorization).toBeUndefined();
+  });
+
+  it('handles a bounded range "start-end"', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          ({
+            ok: true,
+            status: 200,
+            json: async () => ({ nextExpectedRanges: ['1000-2000'] }),
+          }) as unknown as Response,
+      ),
+    );
+    const status = await getUploadSessionStatus('https://upload');
+    expect(status).toEqual({ nextOffset: 1000 });
+  });
+
+  it('returns null when the session is gone (non-ok response)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 404 }) as unknown as Response),
+    );
+    const status = await getUploadSessionStatus('https://upload');
+    expect(status).toBeNull();
+  });
+
+  it('returns null when the response has no usable nextExpectedRanges', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          ({ ok: true, status: 200, json: async () => ({ nextExpectedRanges: [] }) }) as unknown as Response,
+      ),
+    );
+    const status = await getUploadSessionStatus('https://upload');
+    expect(status).toBeNull();
+  });
+
+  it('returns null on network/parse failure', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('network down');
+      }),
+    );
+    const status = await getUploadSessionStatus('https://upload');
+    expect(status).toBeNull();
   });
 });

@@ -224,6 +224,29 @@ export async function putUploadChunk(
   }
 }
 
+/**
+ * Query a resumable upload session for its resume point. The uploadUrl is
+ * pre-authenticated, so no auth header is sent. Returns null if the session
+ * is gone/expired or the response can't be parsed — callers should fall back
+ * to starting a fresh session in that case.
+ */
+export async function getUploadSessionStatus(
+  uploadUrl: string,
+): Promise<{ nextOffset: number } | null> {
+  try {
+    const res = await fetch(uploadUrl);
+    if (!res.ok) return null;
+    const data = (await res.json()) as { nextExpectedRanges?: string[] };
+    const first = data.nextExpectedRanges?.[0];
+    if (!first) return null;
+    const nextOffset = parseInt(first.split('-')[0], 10);
+    if (Number.isNaN(nextOffset)) return null;
+    return { nextOffset };
+  } catch {
+    return null;
+  }
+}
+
 /** Cancel/roll back a resumable upload session. Never throws. */
 export async function cancelUpload(uploadUrl: string): Promise<void> {
   try {

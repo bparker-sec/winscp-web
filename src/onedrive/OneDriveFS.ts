@@ -13,11 +13,11 @@ import {
   type Authable,
   createFolder,
   createUploadSession,
-  cancelUpload,
   deleteItem,
   downloadRange,
   driveItemToEntry,
   getItem,
+  getUploadSessionStatus,
   listChildren,
   patchItem,
   putUploadChunk,
@@ -58,6 +58,13 @@ function concat(parts: Uint8Array[]): Uint8Array {
   }
   return out;
 }
+
+// Retained resumable-upload sessions, keyed by destination path. A partially
+// uploaded OneDrive file isn't a real file yet (no stat), so resume relies on
+// keeping the session's pre-authenticated uploadUrl around and querying it
+// for its nextExpectedRanges. This is in-app-session only: the map is lost on
+// page reload, so resume across reloads isn't supported for OneDrive.
+const uploadSessions = new Map<string, string>();
 
 /** OneDrive file system, addressing items by POSIX path via Microsoft Graph. */
 export class OneDriveFS implements FileSystem {
@@ -152,11 +159,7 @@ export class OneDriveFS implements FileSystem {
     };
   }
 
-  // TODO(resume M3): honor opts.resume via a retained upload-session map keyed
-  // by path (GET the session URL, parse nextExpectedRanges -> startOffset) so
-  // an interrupted OneDrive upload can continue mid-session. For now every
-  // write starts fresh (startOffset 0) regardless of opts.
-  async openWrite(path: string, size?: number, _opts?: { resume?: boolean }): Promise<WriteHandle> {
+  async openWrite(path: string, size?: number, opts?: { resume?: boolean }): Promise<WriteHandle> {
     const auth = this.auth;
     // Unknown length: buffer, then upload on close.
     if (size === undefined) {
@@ -190,23 +193,62 @@ export class OneDriveFS implements FileSystem {
       };
     }
 
-    // Known length: stream to a resumable session in 320 KiB-aligned chunks.
-    let url: string | null = null;
-    let pending: Uint8Array = new Uint8Array(0);
-    let sent = 0;
+    // Known length, small: single buffered PUT — resume doesn't apply.
     const total = size;
-    const ensure = async () => {
-      if (!url) url = await createUploadSession(auth, path);
-      return url;
-    };
+    if (total <= SIMPLE_LIMIT) {
+      let pending: Uint8Array = new Uint8Array(0);
+      return {
+        startOffset: 0,
+        async write(chunk) {
+          pending = concat([pending, chunk]);
+        },
+        async close() {
+          try {
+            await uploadSmall(auth, path, pending);
+          } catch (e) {
+            throw mapError(e);
+          }
+        },
+        async abort() {},
+      };
+    }
+
+    // Known length, large: stream to a resumable session in 320 KiB-aligned
+    // chunks. Resolve which session (and resume offset) to use up front so
+    // `startOffset` is available as soon as the handle is returned.
+    let url: string;
+    let startOffset = 0;
+    if (opts?.resume) {
+      const existing = uploadSessions.get(path);
+      if (existing) {
+        const status = await getUploadSessionStatus(existing);
+        if (status) {
+          url = existing;
+          startOffset = status.nextOffset;
+        } else {
+          // Session gone/expired server-side: forget it and start fresh.
+          uploadSessions.delete(path);
+          url = await createUploadSession(auth, path);
+          uploadSessions.set(path, url);
+        }
+      } else {
+        url = await createUploadSession(auth, path);
+        uploadSessions.set(path, url);
+      }
+    } else {
+      url = await createUploadSession(auth, path);
+      uploadSessions.set(path, url);
+    }
+
+    let pending: Uint8Array = new Uint8Array(0);
+    let sent = startOffset;
     return {
-      startOffset: 0,
+      startOffset,
       // Callers must await each write() before the next; memory stays bounded to
       // roughly one caller chunk + FLUSH_AT.
       async write(chunk) {
         try {
           pending = concat([pending, chunk]);
-          if (total <= SIMPLE_LIMIT) return; // small file: single PUT at close()
           if (pending.byteLength < FLUSH_AT) return; // batch PUTs to ~FLUSH_AT
           let flush = Math.floor(pending.byteLength / ALIGN) * ALIGN;
           // Never flush the block that would complete the session — reserve the
@@ -216,8 +258,7 @@ export class OneDriveFS implements FileSystem {
             flush = Math.max(0, Math.floor((remaining - 1) / ALIGN) * ALIGN);
           }
           if (flush >= ALIGN) {
-            const u = await ensure();
-            await putUploadChunk(u, pending.subarray(0, flush), sent, total);
+            await putUploadChunk(url, pending.subarray(0, flush), sent, total);
             sent += flush;
             pending = pending.slice(flush);
           }
@@ -227,19 +268,16 @@ export class OneDriveFS implements FileSystem {
       },
       async close() {
         try {
-          if (total <= SIMPLE_LIMIT) {
-            await uploadSmall(auth, path, pending);
-            return;
-          }
-          const u = await ensure();
           // Final chunk (may be unaligned) completes the session.
-          await putUploadChunk(u, pending, sent, total);
+          await putUploadChunk(url, pending, sent, total);
+          uploadSessions.delete(path);
         } catch (e) {
           throw mapError(e);
         }
       },
       async abort() {
-        if (url) await cancelUpload(url);
+        // Leave the session retained in uploadSessions so a later resume can
+        // pick it up — do not cancel it here.
       },
     };
   }

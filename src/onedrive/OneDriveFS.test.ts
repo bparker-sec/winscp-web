@@ -13,6 +13,7 @@ const g = vi.hoisted(() => ({
   createUploadSession: vi.fn(),
   putUploadChunk: vi.fn(),
   cancelUpload: vi.fn(),
+  getUploadSessionStatus: vi.fn(),
 }));
 
 vi.mock('./graph', async (importOriginal) => {
@@ -117,16 +118,118 @@ describe('OneDriveFS openWrite', () => {
     expect(g.createUploadSession).not.toHaveBeenCalled();
   });
 
-  it('abort cancels an open upload session', async () => {
+  it('abort leaves the session retained (no cancelUpload) so a later resume can pick it up', async () => {
     g.createUploadSession.mockResolvedValue('https://upload');
     g.putUploadChunk.mockResolvedValue(undefined);
-    g.cancelUpload.mockResolvedValue(undefined);
     const big = 5 * 1024 * 1024; // > SIMPLE_LIMIT so a session is created
     const fs = new OneDriveFS(auth);
-    const w = await fs.openWrite('/big.bin', big);
+    const w = await fs.openWrite('/big-abort.bin', big);
     await w.write(new Uint8Array(10 * 320 * 1024));
     await w.abort();
-    expect(g.cancelUpload).toHaveBeenCalledWith('https://upload');
+    expect(g.cancelUpload).not.toHaveBeenCalled();
+  });
+});
+
+describe('OneDriveFS openWrite resume (M3)', () => {
+  const ALIGN = 320 * 1024;
+
+  it('fresh large openWrite creates a session with startOffset 0', async () => {
+    g.createUploadSession.mockResolvedValue('https://up1');
+    const fs = new OneDriveFS(auth);
+    const w = await fs.openWrite('/resume1.bin', 40 * ALIGN);
+    // startOffset should be readable without any writes; createUploadSession is
+    // created lazily on first flush, so trigger it with a write.
+    await w.write(new Uint8Array(10 * ALIGN));
+    expect(w.startOffset).toBe(0);
+    expect(g.createUploadSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('resume:true reuses the retained session and starts at nextExpectedRanges offset', async () => {
+    g.createUploadSession.mockResolvedValue('https://retained');
+    g.putUploadChunk.mockResolvedValue(undefined);
+    const total = 40 * ALIGN;
+    const fs = new OneDriveFS(auth);
+
+    // First attempt: create a session, write a bit, then abort (session retained).
+    const w1 = await fs.openWrite('/resume2.bin', total);
+    await w1.write(new Uint8Array(10 * ALIGN));
+    await w1.abort();
+    expect(g.createUploadSession).toHaveBeenCalledTimes(1);
+    g.putUploadChunk.mockClear();
+
+    // Second attempt, resuming: status says resume from ALIGN.
+    g.getUploadSessionStatus.mockResolvedValue({ nextOffset: ALIGN });
+    const w2 = await fs.openWrite('/resume2.bin', total, { resume: true });
+    expect(g.getUploadSessionStatus).toHaveBeenCalledWith('https://retained');
+    expect(w2.startOffset).toBe(ALIGN);
+
+    await w2.write(new Uint8Array(10 * ALIGN));
+    await w2.close();
+
+    // createUploadSession was NOT called again — the retained session was reused.
+    expect(g.createUploadSession).toHaveBeenCalledTimes(1);
+    const calls = g.putUploadChunk.mock.calls as [string, Uint8Array, number, number][];
+    expect(calls[0][0]).toBe('https://retained');
+    expect(calls[0][2]).toBe(ALIGN); // first chunk's start offset === resumed offset
+  });
+
+  it('resume:true with no retained/valid session falls back to a fresh session', async () => {
+    g.createUploadSession.mockResolvedValue('https://fresh');
+    g.getUploadSessionStatus.mockResolvedValue(null);
+    const total = 40 * ALIGN;
+    const fs = new OneDriveFS(auth);
+    const w = await fs.openWrite('/never-started.bin', total, { resume: true });
+    await w.write(new Uint8Array(10 * ALIGN));
+    expect(w.startOffset).toBe(0);
+    expect(g.createUploadSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('resume:true when a retained session has since expired falls back to fresh', async () => {
+    g.createUploadSession.mockResolvedValueOnce('https://expiring');
+    g.putUploadChunk.mockResolvedValue(undefined);
+    const total = 40 * ALIGN;
+    const fs = new OneDriveFS(auth);
+    const w1 = await fs.openWrite('/resume3.bin', total);
+    await w1.write(new Uint8Array(10 * ALIGN));
+    await w1.abort();
+
+    g.getUploadSessionStatus.mockResolvedValue(null); // session expired server-side
+    g.createUploadSession.mockResolvedValueOnce('https://fresh2');
+    const w2 = await fs.openWrite('/resume3.bin', total, { resume: true });
+    await w2.write(new Uint8Array(10 * ALIGN));
+    expect(w2.startOffset).toBe(0);
+    expect(g.createUploadSession).toHaveBeenCalledTimes(2);
+  });
+
+  it('on successful close the session is removed, so a later resume starts fresh', async () => {
+    g.createUploadSession.mockResolvedValueOnce('https://session-a');
+    g.putUploadChunk.mockResolvedValue(undefined);
+    const total = 40 * ALIGN;
+    const fs = new OneDriveFS(auth);
+    const w1 = await fs.openWrite('/resume4.bin', total);
+    for (let i = 0; i < 4; i++) await w1.write(new Uint8Array(10 * ALIGN));
+    await w1.close();
+    expect(g.createUploadSession).toHaveBeenCalledTimes(1);
+
+    // Nothing retained now: even with resume:true, a fresh session is created.
+    g.createUploadSession.mockResolvedValueOnce('https://session-b');
+    const w2 = await fs.openWrite('/resume4.bin', total, { resume: true });
+    await w2.write(new Uint8Array(10 * ALIGN));
+    expect(g.getUploadSessionStatus).not.toHaveBeenCalled();
+    expect(w2.startOffset).toBe(0);
+    expect(g.createUploadSession).toHaveBeenCalledTimes(2);
+  });
+
+  it('small-file non-resume path is unaffected (uploadSmall, startOffset 0)', async () => {
+    g.uploadSmall.mockResolvedValue(undefined);
+    const fs = new OneDriveFS(auth);
+    const w = await fs.openWrite('/small2.bin', 3);
+    expect(w.startOffset).toBe(0);
+    await w.write(new Uint8Array([1, 2, 3]));
+    await w.close();
+    expect(g.uploadSmall).toHaveBeenCalledTimes(1);
+    expect(g.createUploadSession).not.toHaveBeenCalled();
+    expect(g.getUploadSessionStatus).not.toHaveBeenCalled();
   });
 });
 
