@@ -17,6 +17,8 @@ import {
   SSH_MSG_CHANNEL_WINDOW_ADJUST,
   SSH_MSG_CHANNEL_EOF,
   SSH_MSG_CHANNEL_CLOSE,
+  SSH_MSG_CHANNEL_OPEN_CONFIRMATION,
+  SSH_MSG_CHANNEL_SUCCESS,
 } from './constants';
 
 /** Records everything written and hands out a scripted queue of raw bytes on receive(). */
@@ -195,6 +197,62 @@ describe('SshClient cipher swap at NEWKEYS', () => {
     expect((client as any).c2sSeq).toBe(2);
 
     expect((client as any).c2sCipher).toBeInstanceOf(GcmCipher);
+  });
+});
+
+describe('SshClient.openSubsystem — early CHANNEL_WINDOW_ADJUST regression', () => {
+  it('applies a CHANNEL_WINDOW_ADJUST that arrives before CHANNEL_SUCCESS, instead of dropping it', async () => {
+    // Server opens the channel with a ZERO initial window, then immediately grants
+    // the real window via WINDOW_ADJUST *before* replying to the subsystem request.
+    // That WINDOW_ADJUST arrives while openSubsystem() is inside
+    // recvExpecting(CHANNEL_SUCCESS) — it must be routed to the channel, not dropped.
+    const openConfirmation = new SshWriter()
+      .byte(SSH_MSG_CHANNEL_OPEN_CONFIRMATION)
+      .uint32(0) // recipient (our local channel 0)
+      .uint32(0) // sender (server's channel id)
+      .uint32(0) // window = 0
+      .uint32(32768) // maxPacket
+      .finish();
+    const earlyWindowAdjust = new SshWriter()
+      .byte(SSH_MSG_CHANNEL_WINDOW_ADJUST)
+      .uint32(0) // recipient = our local channel 0
+      .uint32(2097152) // bytesToAdd
+      .finish();
+    const subsystemSuccess = new SshWriter().byte(SSH_MSG_CHANNEL_SUCCESS).uint32(0).finish();
+
+    const { client } = newClient([openConfirmation, earlyWindowAdjust, subsystemSuccess]);
+
+    const chan = await client.openSubsystem('sftp');
+
+    // The key assertion: the early WINDOW_ADJUST reached the channel rather
+    // than being silently dropped by recvExpecting's non-matching-message path.
+    expect((chan as any).remoteWindow).toBe(2097152);
+  });
+
+  it('regression guard: a write after open does not deadlock now that the grant was applied', async () => {
+    const openConfirmation = new SshWriter()
+      .byte(SSH_MSG_CHANNEL_OPEN_CONFIRMATION)
+      .uint32(0)
+      .uint32(0)
+      .uint32(0) // window = 0
+      .uint32(32768)
+      .finish();
+    const earlyWindowAdjust = new SshWriter().byte(SSH_MSG_CHANNEL_WINDOW_ADJUST).uint32(0).uint32(2097152).finish();
+    const subsystemSuccess = new SshWriter().byte(SSH_MSG_CHANNEL_SUCCESS).uint32(0).finish();
+
+    const { client, socket } = newClient([openConfirmation, earlyWindowAdjust, subsystemSuccess]);
+    const chan = await client.openSubsystem('sftp');
+
+    const sentBeforeWrite = socket.sentBytes.length;
+    // If the grant had been dropped (the bug), remoteWindow would still be 0
+    // and this write would hang forever waiting on a WINDOW_ADJUST that will
+    // never come — so a bounded race against a timeout proves it didn't hang.
+    const wroteInTime = await Promise.race([
+      chan.write(new Uint8Array(10)).then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 200)),
+    ]);
+    expect(wroteInTime).toBe(true);
+    expect(socket.sentBytes.length).toBeGreaterThan(sentBeforeWrite);
   });
 });
 
