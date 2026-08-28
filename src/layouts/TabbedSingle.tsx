@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useApp } from '../state/AppProvider';
 import { MenuBar } from '../ui/MenuBar';
-import { Toolbar } from '../ui/Toolbar';
 import { StatusBar } from '../ui/StatusBar';
 import { PaneView } from '../ui/PaneView';
 import { TransferQueue } from '../ui/TransferQueue';
@@ -73,13 +72,13 @@ export function TabbedSingle() {
           🖥 {remote?.label ?? 'remote'}
         </button>
       </div>
-      <Toolbar onUpload={uploadToRemote} onDownload={downloadToLocal} />
       <div className="flex-1 min-h-0">
         {side === 'local' ? (
           local ? (
             <PaneView
               fs={local}
               header={local.label}
+              side="local"
               onCwdChange={setLocalCwd}
               onSelectionChange={setLocalSelection}
               onTransferOut={() => uploadToRemote()}
@@ -92,6 +91,7 @@ export function TabbedSingle() {
             fs={remote}
             header={remote.label}
             initialPath={remoteHome}
+            side="remote"
             onDisconnect={remoteDisconnect}
             onCwdChange={setRemoteCwd}
             onSelectionChange={setRemoteSelection}

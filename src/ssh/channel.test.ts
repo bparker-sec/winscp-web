@@ -245,6 +245,70 @@ describe('SshChannel inbound data + window replenishment', () => {
   });
 });
 
+describe('SshChannel write mutex (concurrent writes)', () => {
+  it('keeps each write() call\'s chunks contiguous on the wire, never interleaved', async () => {
+    const sent: Uint8Array[] = [];
+    // Simulate an async transport where each send() yields a microtask before
+    // resolving, so concurrent writes COULD interleave if not serialized by
+    // the write mutex.
+    const send = vi.fn(async (payload: Uint8Array) => {
+      await Promise.resolve();
+      await Promise.resolve();
+      sent.push(payload);
+    });
+
+    const channel = new SshChannel({
+      send,
+      localChannel: 0,
+      remoteChannel: 1,
+      remoteWindow: 1_000_000,
+      maxPacket: 4,
+      localWindow: 1000,
+    });
+
+    const payloadA = new Uint8Array(12).fill(0xaa); // 4 + 4 + 4 = 3 chunks
+    const payloadB = new Uint8Array(12).fill(0xbb); // 3 chunks
+
+    const writeA = channel.write(payloadA);
+    const writeB = channel.write(payloadB);
+    await Promise.all([writeA, writeB]);
+
+    expect(sent.length).toBe(6);
+
+    const chunks = sent.map((p) => parseChannelData(p).data);
+    // Every chunk must be homogeneous (all 0xAA or all 0xBB) — a byte-level
+    // interleave within a single CHANNEL_DATA payload would fail this too,
+    // but the real risk is chunk-level interleaving across the two writes.
+    const chunkKind = chunks.map((c) => (c[0] === 0xaa ? 'A' : 'B'));
+    for (const c of chunks) {
+      const kind = c[0];
+      expect(c.every((b) => b === kind)).toBe(true);
+    }
+
+    // The sequence must be all-A-then-all-B or all-B-then-all-A — never
+    // interleaved (e.g. A,B,A would prove the mutex failed to serialize).
+    const isSorted =
+      chunkKind.join('') === 'AAABBB' || chunkKind.join('') === 'BBBAAA';
+    expect(isSorted).toBe(true);
+
+    // Reconstruct each write's byte-stream from its contiguous chunks and
+    // confirm it matches the original payload exactly.
+    const aChunks = chunks.filter((_, i) => chunkKind[i] === 'A');
+    const bChunks = chunks.filter((_, i) => chunkKind[i] === 'B');
+    const reconstruct = (parts: Uint8Array[]) => {
+      const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+      let off = 0;
+      for (const p of parts) {
+        out.set(p, off);
+        off += p.length;
+      }
+      return out;
+    };
+    expect(reconstruct(aChunks)).toEqual(payloadA);
+    expect(reconstruct(bChunks)).toEqual(payloadB);
+  });
+});
+
 describe('SshChannel eof/close', () => {
   it('eof() and close() send the right messages', async () => {
     const sent: Uint8Array[] = [];

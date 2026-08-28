@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FileSystem, FsEntry } from '../fs/FileSystem';
 import { FsError, joinPath, parentPath } from '../fs/FileSystem';
-import { IconFolder, IconFile, IconUp, IconRefresh, IconNewFolder, IconTrash } from './icons';
+import { IconFolder, IconFile, IconUp, IconDown, IconRefresh, IconNewFolder, IconTrash } from './icons';
 import { PromptModal } from './PromptModal';
 
 type SortKey = 'name' | 'size' | 'mtime';
@@ -223,6 +223,9 @@ export function PaneView({
     });
   };
 
+  const transferLabel = side === 'local' ? 'Upload →' : side === 'remote' ? '← Download' : 'Transfer';
+  const transferTitle = side === 'local' ? 'Upload to remote' : side === 'remote' ? 'Download to local' : 'Transfer';
+
   return (
     <div
       ref={containerRef}
@@ -287,6 +290,16 @@ export function PaneView({
         >
           <IconTrash /> Delete
         </button>
+        {onTransferOut && (
+          <button
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-muted hover:bg-accent/10 hover:text-fg disabled:opacity-40 disabled:pointer-events-none"
+            disabled={selectedEntries.length === 0}
+            onClick={() => onTransferOut(selectedEntries)}
+            title={transferTitle}
+          >
+            {side === 'remote' ? <IconDown /> : <IconUp />} {transferLabel}
+          </button>
+        )}
       </div>
       {actionError && (
         <div className="px-2 py-1 text-[11px] text-danger border-b border-border">{actionError}</div>

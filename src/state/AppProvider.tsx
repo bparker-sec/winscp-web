@@ -26,6 +26,9 @@ import { parseOpenSshPrivateKey } from '../ssh/privatekey';
 import { TransferQueue, type TransferJob, type ConflictChoice } from '../transfer/queue';
 import { diag } from '../diagnostics/log';
 
+/** How long the vault stays unlocked after an unlock/use before it auto-locks (sliding window). */
+const VAULT_LOCK_MS = 15 * 60 * 1000;
+
 function errorCode(e: unknown): string | undefined {
   if (e && typeof e === 'object' && 'code' in e) {
     const c = (e as { code: unknown }).code;
@@ -144,6 +147,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const pendingSaveRef = useRef<{ conn: SavedConnection; secret?: string } | null>(null);
   const pendingConnectIdRef = useRef<string | null>(null);
   const connectSavedRef = useRef<((id: string) => Promise<void>) | null>(null);
+  const vaultLockTimerRef = useRef<number | null>(null);
+
+  // Sliding auto-lock: any successful unlock or vault use restarts this timer.
+  // If nothing touches the vault for VAULT_LOCK_MS, it locks itself.
+  const clearVaultLockTimer = useCallback(() => {
+    if (vaultLockTimerRef.current !== null) {
+      window.clearTimeout(vaultLockTimerRef.current);
+      vaultLockTimerRef.current = null;
+    }
+  }, []);
+
+  const touchVault = useCallback(() => {
+    clearVaultLockTimer();
+    vaultLockTimerRef.current = window.setTimeout(() => {
+      vaultLockTimerRef.current = null;
+      vault.lock();
+      setVaultState(vault.state);
+      diag.info('Vault auto-locked after inactivity');
+    }, VAULT_LOCK_MS);
+  }, [clearVaultLockTimer, vault]);
+
+  useEffect(() => clearVaultLockTimer, [clearVaultLockTimer]);
 
   const refreshConnections = useCallback(() => {
     setConnections(store.list());
@@ -228,6 +253,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (pass: string) => {
       await vault.initialize(pass);
       setVaultState(vault.state);
+      touchVault();
       setPassphraseDialog(null);
       await runPendingSave();
       const pendingConnectId = pendingConnectIdRef.current;
@@ -236,7 +262,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         await connectSavedRef.current?.(pendingConnectId);
       }
     },
-    [vault, runPendingSave],
+    [vault, runPendingSave, touchVault],
   );
 
   const unlockVault = useCallback(
@@ -244,6 +270,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const ok = await vault.unlock(pass);
       setVaultState(vault.state);
       if (ok) {
+        touchVault();
         setPassphraseDialog(null);
         await runPendingSave();
         const pendingConnectId = pendingConnectIdRef.current;
@@ -254,7 +281,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       return ok;
     },
-    [vault, runPendingSave],
+    [vault, runPendingSave, touchVault],
   );
 
   const refreshUser = useCallback(async () => {
@@ -396,6 +423,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         let secret: string | null;
         try {
           secret = await store.getSecret(id);
+          touchVault();
         } catch {
           setRemoteError('Could not decrypt the saved secret — re-enter it.');
           return;
@@ -429,7 +457,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         alwaysPrompt: conn.alwaysPrompt,
       });
     },
-    [store, vault, remoteConnect, openConnectDialogPrefilled],
+    [store, vault, remoteConnect, openConnectDialogPrefilled, touchVault],
   );
   connectSavedRef.current = connectSaved;
 

@@ -1,7 +1,6 @@
 import type { FsEntry } from '../fs/FileSystem';
 import { useApp } from '../state/AppProvider';
 import { MenuBar } from '../ui/MenuBar';
-import { Toolbar } from '../ui/Toolbar';
 import { StatusBar } from '../ui/StatusBar';
 import { Splitter } from '../ui/Splitter';
 import { PaneView } from '../ui/PaneView';
@@ -39,8 +38,6 @@ export function Commander() {
     remoteCwd,
     setLocalCwd,
     setRemoteCwd,
-    localSelection,
-    remoteSelection,
     setLocalSelection,
     setRemoteSelection,
     enqueueTransfer,
@@ -61,10 +58,6 @@ export function Commander() {
         userName={userName}
         onConnect={connect}
         onDisconnect={disconnect}
-      />
-      <Toolbar
-        onUpload={() => uploadToRemote(localSelection)}
-        onDownload={() => downloadToLocal(remoteSelection)}
       />
       <div className="flex flex-1 min-h-0">
         <div style={{ width: `${splitRatio * 100}%` }} className="min-w-0 border-r border-border">
