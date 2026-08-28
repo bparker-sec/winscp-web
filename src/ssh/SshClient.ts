@@ -428,11 +428,12 @@ export class SshClient {
     }
   }
 
-  private teardownChannels(_err: Error): void {
+  private teardownChannels(err: Error): void {
     this.closed = true;
     this.stopKeepalive();
+    const reason = err.message || 'transport closed';
     for (const channel of this.channels.values()) {
-      channel.onClose();
+      channel.onClose(reason);
     }
     this.channels.clear();
   }

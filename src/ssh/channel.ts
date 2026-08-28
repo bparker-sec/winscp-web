@@ -138,6 +138,12 @@ export class SshChannel {
   private readonly writeWaiters: Array<() => void> = [];
   private eofReceived = false;
   private closed = false;
+  private closeReason: string | null = null;
+  // Serializes whole write() calls. Each write splits its payload into CHANNEL_DATA
+  // chunks with awaits between them; without this, two concurrent transfers would
+  // interleave their chunks and corrupt the SFTP byte stream, so the server closes
+  // the channel. This keeps every write's chunks contiguous on the wire.
+  private writeChain: Promise<void> = Promise.resolve();
 
   constructor(opts: SshChannelOptions) {
     this.send = opts.send;
@@ -149,12 +155,24 @@ export class SshChannel {
     this.localWindow = opts.localWindow;
   }
 
-  /** Split `data` into chunks respecting maxPacket and the remote window, sending CHANNEL_DATA. */
-  async write(data: Uint8Array): Promise<void> {
+  /**
+   * Write `data` as one atomic unit: split into maxPacket/window-sized CHANNEL_DATA
+   * chunks, serialized against other write()s so a whole SFTP packet's chunks stay
+   * contiguous on the wire (concurrent transfers must not interleave).
+   */
+  write(data: Uint8Array): Promise<void> {
+    const run = this.writeChain.then(() => this.doWrite(data));
+    this.writeChain = run.catch(() => {});
+    return run;
+  }
+
+  private async doWrite(data: Uint8Array): Promise<void> {
     let offset = 0;
     while (offset < data.length) {
       if (this.closed) {
-        throw new Error('SshChannel: cannot write, channel is closed.');
+        throw new Error(
+          `SshChannel: cannot write, channel is closed${this.closeReason ? ` (${this.closeReason})` : ''}.`,
+        );
       }
       if (this.remoteWindow <= 0) {
         await this.waitForWindow();
@@ -248,9 +266,10 @@ export class SshChannel {
     this.teardown();
   }
 
-  /** Called by the dispatcher when a remote CHANNEL_CLOSE arrives for this channel. */
-  onClose(): void {
+  /** Called by the dispatcher when a remote CHANNEL_CLOSE arrives (or the transport tears down). */
+  onClose(reason?: string): void {
     if (this.closed) return;
+    if (reason) this.closeReason = reason;
     this.teardown();
   }
 }
