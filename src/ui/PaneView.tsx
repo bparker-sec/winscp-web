@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FileSystem, FsEntry } from '../fs/FileSystem';
-import { parentPath } from '../fs/FileSystem';
-import { IconFolder, IconFile } from './icons';
+import { FsError, joinPath, parentPath } from '../fs/FileSystem';
+import { IconFolder, IconFile, IconUp, IconRefresh, IconNewFolder, IconTrash } from './icons';
+import { PromptModal } from './PromptModal';
 
 type SortKey = 'name' | 'size' | 'mtime';
 
@@ -57,9 +58,16 @@ export function PaneView({
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [showNewFolder, setShowNewFolder] = useState(false);
+  const [showRename, setShowRename] = useState(false);
+  const [showDelete, setShowDelete] = useState(false);
   const lastAnchorRef = useRef<string | null>(null);
   const hoveredRef = useRef(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  const reload = () => setRefreshKey((k) => k + 1);
 
   useEffect(() => {
     let alive = true;
@@ -70,7 +78,20 @@ export function PaneView({
     return () => {
       alive = false;
     };
-  }, [fs, cwd]);
+  }, [fs, cwd, refreshKey]);
+
+  const describeError = (e: unknown): string =>
+    e instanceof FsError ? `${e.code}: ${e.message}` : String((e as Error)?.message ?? e);
+
+  const runAction = async (fn: () => Promise<void>) => {
+    try {
+      await fn();
+      setActionError(null);
+      reload();
+    } catch (e) {
+      setActionError(describeError(e));
+    }
+  };
 
   // Reset selection when navigating.
   useEffect(() => {
@@ -168,6 +189,40 @@ export function PaneView({
     onDropIn(drag.entries);
   };
 
+  const handleUp = () => {
+    if (cwd === '/') return;
+    setCwd(parentPath(cwd));
+  };
+
+  const handleNewFolder = (name: string) => {
+    setShowNewFolder(false);
+    if (!name) return;
+    void runAction(async () => {
+      await fs.mkdir(joinPath(cwd, name));
+    });
+  };
+
+  const handleRename = (newName: string) => {
+    setShowRename(false);
+    if (!newName || selectedEntries.length !== 1) return;
+    const entry = selectedEntries[0];
+    void runAction(async () => {
+      await fs.rename(entry.path, joinPath(cwd, newName));
+    });
+  };
+
+  const handleDeleteConfirm = () => {
+    setShowDelete(false);
+    const toDelete = selectedEntries;
+    if (!toDelete.length) return;
+    void runAction(async () => {
+      for (const entry of toDelete) {
+        await fs.remove(entry.path, entry.kind === 'dir');
+      }
+      setSelected(new Set());
+    });
+  };
+
   return (
     <div
       ref={containerRef}
@@ -193,21 +248,55 @@ export function PaneView({
           </button>
         )}
       </div>
+      <div className="px-2 py-1 border-b border-border flex flex-wrap items-center gap-1 text-[11px]">
+        <button
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-muted hover:bg-accent/10 hover:text-fg disabled:opacity-40 disabled:pointer-events-none"
+          disabled={cwd === '/'}
+          onClick={handleUp}
+          title="Up"
+        >
+          <IconUp /> Up
+        </button>
+        <button
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-muted hover:bg-accent/10 hover:text-fg"
+          onClick={reload}
+          title="Refresh"
+        >
+          <IconRefresh /> Refresh
+        </button>
+        <button
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-muted hover:bg-accent/10 hover:text-fg"
+          onClick={() => setShowNewFolder(true)}
+          title="New folder"
+        >
+          <IconNewFolder /> New folder
+        </button>
+        <button
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-muted hover:bg-accent/10 hover:text-fg disabled:opacity-40 disabled:pointer-events-none"
+          disabled={selectedEntries.length !== 1}
+          onClick={() => setShowRename(true)}
+          title="Rename"
+        >
+          Rename
+        </button>
+        <button
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-muted hover:bg-danger/10 hover:text-danger disabled:opacity-40 disabled:pointer-events-none"
+          disabled={selectedEntries.length === 0}
+          onClick={() => setShowDelete(true)}
+          title="Delete"
+        >
+          <IconTrash /> Delete
+        </button>
+      </div>
+      {actionError && (
+        <div className="px-2 py-1 text-[11px] text-danger border-b border-border">{actionError}</div>
+      )}
       <div className="grid grid-cols-[1fr_80px_130px] px-2 py-1 text-[11px] text-muted border-b border-border">
         <button className="text-left" onClick={() => setSortKey('name')}>Name</button>
         <button className="text-right" onClick={() => setSortKey('size')}>Size</button>
         <button className="text-right" onClick={() => setSortKey('mtime')}>Modified</button>
       </div>
       <div className="flex-1 min-h-0 overflow-auto font-mono text-[12px]">
-        {cwd !== '/' && (
-          <button
-            className="w-full text-left px-2 py-0.5 hover:bg-accent/10"
-            onDoubleClick={() => setCwd(parentPath(cwd))}
-            onClick={() => setCwd(parentPath(cwd))}
-          >
-            📁 ..
-          </button>
-        )}
         {error && <div className="px-2 py-2 text-danger">{error}</div>}
         {rows.map((e) => (
           <div
@@ -229,6 +318,36 @@ export function PaneView({
           </div>
         ))}
       </div>
+      {showNewFolder && (
+        <PromptModal
+          title="New folder"
+          label="Folder name"
+          confirmLabel="Create"
+          onSubmit={handleNewFolder}
+          onCancel={() => setShowNewFolder(false)}
+        />
+      )}
+      {showRename && selectedEntries.length === 1 && (
+        <PromptModal
+          title="Rename"
+          label="New name"
+          initialValue={selectedEntries[0].name}
+          confirmLabel="Rename"
+          onSubmit={handleRename}
+          onCancel={() => setShowRename(false)}
+        />
+      )}
+      {showDelete && (
+        <PromptModal
+          title="Delete"
+          prompt={false}
+          message={`Delete ${selectedEntries.length} item(s)? This cannot be undone.`}
+          confirmLabel="Delete"
+          danger
+          onSubmit={handleDeleteConfirm}
+          onCancel={() => setShowDelete(false)}
+        />
+      )}
     </div>
   );
 }
