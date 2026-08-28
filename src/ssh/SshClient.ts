@@ -150,10 +150,44 @@ export class SshClient {
       if (pred(msgNum, payload)) {
         return payload;
       }
-      // Not the awaited message and not a transparently-handled one: drop it.
-      // (During the synchronous handshake/auth/open phases the server should
-      // not be sending anything else; a stray message is ignored rather than
-      // treated as fatal, matching the plan's "skip" handling.)
+      // Not the awaited message: route channel traffic to its channel rather
+      // than dropping it. This matters when a server opens a channel with a
+      // zero window and immediately sends a CHANNEL_WINDOW_ADJUST that arrives
+      // before the awaited CHANNEL_SUCCESS — dropping it would deadlock the
+      // first write. Anything else is ignored.
+      this.dispatchChannelMessage(msgNum, payload);
+    }
+  }
+
+  /** Route an inbound CHANNEL_* message to its owning channel. Returns true if handled. */
+  private dispatchChannelMessage(msgNum: number, payload: Uint8Array): boolean {
+    switch (msgNum) {
+      case SSH_MSG_CHANNEL_DATA: {
+        const { recipient, data } = parseChannelData(payload);
+        this.channels.get(recipient)?.onData(data);
+        return true;
+      }
+      case SSH_MSG_CHANNEL_WINDOW_ADJUST: {
+        const { recipient, bytesToAdd } = parseWindowAdjust(payload);
+        this.channels.get(recipient)?.onWindowAdjust(bytesToAdd);
+        return true;
+      }
+      case SSH_MSG_CHANNEL_EOF: {
+        const r = new SshReader(payload);
+        r.byte();
+        this.channels.get(r.uint32())?.onEof();
+        return true;
+      }
+      case SSH_MSG_CHANNEL_CLOSE: {
+        const r = new SshReader(payload);
+        r.byte();
+        const recipient = r.uint32();
+        this.channels.get(recipient)?.onClose();
+        this.channels.delete(recipient);
+        return true;
+      }
+      default:
+        return false;
     }
   }
 
@@ -327,48 +361,20 @@ export class SshClient {
         const payload = await this.recv();
         const msgNum = payload[0];
 
-        switch (msgNum) {
-          case SSH_MSG_IGNORE:
-          case SSH_MSG_DEBUG:
-          case SSH_MSG_USERAUTH_BANNER:
-            break;
-          case SSH_MSG_GLOBAL_REQUEST:
-            await this.handleGlobalRequest(payload);
-            break;
-          case SSH_MSG_CHANNEL_DATA: {
-            const { recipient, data } = parseChannelData(payload);
-            this.channels.get(recipient)?.onData(data);
-            break;
-          }
-          case SSH_MSG_CHANNEL_WINDOW_ADJUST: {
-            const { recipient, bytesToAdd } = parseWindowAdjust(payload);
-            this.channels.get(recipient)?.onWindowAdjust(bytesToAdd);
-            break;
-          }
-          case SSH_MSG_CHANNEL_EOF: {
-            const r = new SshReader(payload);
-            r.byte();
-            const recipient = r.uint32();
-            this.channels.get(recipient)?.onEof();
-            break;
-          }
-          case SSH_MSG_CHANNEL_CLOSE: {
-            const r = new SshReader(payload);
-            r.byte();
-            const recipient = r.uint32();
-            this.channels.get(recipient)?.onClose();
-            this.channels.delete(recipient);
-            break;
-          }
-          case SSH_MSG_DISCONNECT: {
-            const { code, reason } = parseDisconnect(payload);
-            this.teardownChannels(new SshDisconnectError(code, reason));
-            return;
-          }
-          default:
-            // Unrecognised message during the channel phase: ignore.
-            break;
+        if (msgNum === SSH_MSG_DISCONNECT) {
+          const { code, reason } = parseDisconnect(payload);
+          this.teardownChannels(new SshDisconnectError(code, reason));
+          return;
         }
+        if (msgNum === SSH_MSG_GLOBAL_REQUEST) {
+          await this.handleGlobalRequest(payload);
+          continue;
+        }
+        if (msgNum === SSH_MSG_IGNORE || msgNum === SSH_MSG_DEBUG || msgNum === SSH_MSG_USERAUTH_BANNER) {
+          continue;
+        }
+        // CHANNEL_* → routed to the owning channel; anything else ignored.
+        this.dispatchChannelMessage(msgNum, payload);
       }
     } catch (err) {
       this.teardownChannels(err instanceof Error ? err : new Error(String(err)));
