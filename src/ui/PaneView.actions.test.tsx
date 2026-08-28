@@ -82,4 +82,31 @@ describe('PaneView per-pane actions', () => {
     });
     expect(screen.queryByText(/\.\./)).toBeNull();
   });
+
+  it('bumping refreshSignal re-lists the current cwd without resetting cwd or selection', async () => {
+    const fs = fakeFs(rootEntries);
+    const onSelectionChange = vi.fn();
+    const { rerender } = render(
+      <PaneView fs={fs} header="Test" refreshSignal={0} onSelectionChange={onSelectionChange} />,
+    );
+    await screen.findByText('a.txt');
+
+    // Select a row, then confirm the initial list call count before refreshing.
+    fireEvent.click(screen.getByText('a.txt'));
+    await waitFor(() => {
+      expect(onSelectionChange.mock.calls.at(-1)?.[0]).toHaveLength(1);
+    });
+    const callsBefore = (fs.list as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    rerender(<PaneView fs={fs} header="Test" refreshSignal={1} onSelectionChange={onSelectionChange} />);
+
+    await waitFor(() => {
+      expect((fs.list as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore + 1);
+    });
+    // Same cwd is re-listed.
+    expect((fs.list as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0]).toBe('/');
+    // Selection is left untouched by the refresh.
+    expect(onSelectionChange.mock.calls.at(-1)?.[0]).toHaveLength(1);
+    expect(screen.getByText('a.txt').closest('div')?.className).toMatch(/\bselected\b/);
+  });
 });

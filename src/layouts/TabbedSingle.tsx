@@ -40,6 +40,8 @@ export function TabbedSingle() {
     setLocalSelection,
     setRemoteSelection,
     enqueueTransfer,
+    localRefreshNonce,
+    remoteRefreshNonce,
   } = useApp();
   const [side, setSide] = useState<'local' | 'remote'>('local');
 
@@ -82,6 +84,7 @@ export function TabbedSingle() {
               onCwdChange={setLocalCwd}
               onSelectionChange={setLocalSelection}
               onTransferOut={() => uploadToRemote()}
+              refreshSignal={localRefreshNonce}
             />
           ) : (
             <ConnectHint connecting={connecting} error={connectError} onConnect={connect} />
@@ -96,6 +99,7 @@ export function TabbedSingle() {
             onCwdChange={setRemoteCwd}
             onSelectionChange={setRemoteSelection}
             onTransferOut={() => downloadToLocal()}
+            refreshSignal={remoteRefreshNonce}
           />
         ) : (
           <RemoteConnectHint />

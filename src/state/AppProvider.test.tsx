@@ -406,3 +406,130 @@ describe('AppProvider conflict-resolver wiring', () => {
     expect(result.current.conflictPrompt).toBeNull();
   });
 });
+
+describe('AppProvider destination-pane auto-refresh on transfer completion', () => {
+  beforeEach(() => {
+    mockConnectSftp.mockReset();
+    mockRememberHost.mockReset();
+    mockConnectOneDrive.mockReset();
+    localFsForOneDriveMock = new MockFS('local');
+  });
+
+  async function connectBothSides() {
+    mockConnectOneDrive.mockResolvedValue({ ok: true });
+    const remoteFs = new MockFS('remote');
+    const close = vi.fn(async () => {});
+    mockConnectSftp.mockResolvedValue({ fs: remoteFs, fingerprint: 'SHA256:x', home: '/', close });
+
+    const { result } = setupHook();
+
+    act(() => {
+      result.current.connect();
+    });
+    await waitFor(() => expect(result.current.local).not.toBeNull());
+
+    act(() => {
+      result.current.remoteConnect({ host: 'example.com', port: 22, username: 'bob', password: 'x' });
+    });
+    await waitFor(() => expect(result.current.remote).not.toBeNull());
+
+    return result;
+  }
+
+  it('an upload (direction "up") that completes bumps remoteRefreshNonce only', async () => {
+    const result = await connectBothSides();
+    const startingLocal = result.current.localRefreshNonce;
+    const startingRemote = result.current.remoteRefreshNonce;
+
+    const entry = await result.current.local!.stat('/readme.md');
+    act(() => {
+      result.current.enqueueTransfer({ from: 'local', entries: [entry], toDir: '/upload-dst' });
+    });
+
+    await waitFor(() => {
+      const job = result.current.jobs.find((j) => j.name === 'readme.md');
+      expect(job?.state).toBe('done');
+    });
+
+    expect(result.current.remoteRefreshNonce).toBe(startingRemote + 1);
+    expect(result.current.localRefreshNonce).toBe(startingLocal);
+  });
+
+  it('a download (direction "down") that completes bumps localRefreshNonce only', async () => {
+    const result = await connectBothSides();
+    const startingLocal = result.current.localRefreshNonce;
+    const startingRemote = result.current.remoteRefreshNonce;
+
+    const entry = await result.current.remote!.stat('/readme.md');
+    act(() => {
+      result.current.enqueueTransfer({ from: 'remote', entries: [entry], toDir: '/download-dst' });
+    });
+
+    await waitFor(() => {
+      const job = result.current.jobs.find((j) => j.name === 'readme.md');
+      expect(job?.state).toBe('done');
+    });
+
+    expect(result.current.localRefreshNonce).toBe(startingLocal + 1);
+    expect(result.current.remoteRefreshNonce).toBe(startingRemote);
+  });
+
+  it('bumps the nonce exactly once per completion, not once per progress emission', async () => {
+    const result = await connectBothSides();
+    const startingRemote = result.current.remoteRefreshNonce;
+
+    const entry = await result.current.local!.stat('/readme.md');
+    act(() => {
+      result.current.enqueueTransfer({ from: 'local', entries: [entry], toDir: '/upload-dst2' });
+    });
+
+    await waitFor(() => {
+      const job = result.current.jobs.find((j) => j.name === 'readme.md');
+      expect(job?.state).toBe('done');
+    });
+
+    // Let any further queue snapshots (e.g. idle cleanup) flush.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.current.remoteRefreshNonce).toBe(startingRemote + 1);
+  });
+
+  it('a retried job that fails then completes bumps the nonce once, on the eventual done', async () => {
+    const result = await connectBothSides();
+    const startingRemote = result.current.remoteRefreshNonce;
+
+    // Force the first attempt to error (openWrite throws once), so the job
+    // reaches 'error' before a retry lets the (now-unpatched) real openWrite
+    // succeed.
+    const dst = result.current.remote!;
+    vi.spyOn(dst, 'openWrite').mockImplementationOnce(() => {
+      throw new Error('injected failure');
+    });
+
+    const entry = await result.current.local!.stat('/readme.md');
+    act(() => {
+      result.current.enqueueTransfer({ from: 'local', entries: [entry], toDir: '/upload-dst3' });
+    });
+
+    await waitFor(() => {
+      const job = result.current.jobs.find((j) => j.name === 'readme.md');
+      expect(job?.state).toBe('error');
+    });
+    // The failed attempt must not have bumped the destination nonce.
+    expect(result.current.remoteRefreshNonce).toBe(startingRemote);
+
+    const jobId = result.current.jobs.find((j) => j.name === 'readme.md')!.id;
+    act(() => {
+      result.current.retryJob(jobId);
+    });
+
+    await waitFor(() => {
+      const job = result.current.jobs.find((j) => j.id === jobId);
+      expect(job?.state).toBe('done');
+    });
+
+    expect(result.current.remoteRefreshNonce).toBe(startingRemote + 1);
+  });
+});

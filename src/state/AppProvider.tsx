@@ -113,6 +113,11 @@ interface AppState {
   setLocalSelection: (entries: FsEntry[]) => void;
   remoteSelection: FsEntry[];
   setRemoteSelection: (entries: FsEntry[]) => void;
+  /** Bumped once per completed transfer whose destination is the local pane, so
+   * the local PaneView re-lists its current directory. */
+  localRefreshNonce: number;
+  /** Bumped once per completed transfer whose destination is the remote pane. */
+  remoteRefreshNonce: number;
   // Settings / diagnostics
   settingsOpen: boolean;
   openSettings: () => void;
@@ -621,6 +626,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // job that emits multiple snapshots in the same terminal state (e.g. a
   // progress tick right before 'done') isn't logged more than once.
   const loggedJobIdsRef = useRef<Set<string>>(new Set());
+  const [localRefreshNonce, setLocalRefreshNonce] = useState(0);
+  const [remoteRefreshNonce, setRemoteRefreshNonce] = useState(0);
 
   useEffect(() => {
     return queue.subscribe((snapshot) => {
@@ -647,6 +654,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         } else if (job.state === 'done') {
           diag.info(`Transferred ${job.name}`);
           loggedJobIdsRef.current.add(job.id);
+          // Refresh whichever pane received the file — 'up' (local→remote)
+          // lands in remote, 'down' (remote→local) lands in local.
+          if (job.direction === 'up') {
+            setRemoteRefreshNonce((n) => n + 1);
+          } else {
+            setLocalRefreshNonce((n) => n + 1);
+          }
         }
       }
     });
@@ -763,6 +777,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLocalSelection,
     remoteSelection,
     setRemoteSelection,
+    localRefreshNonce,
+    remoteRefreshNonce,
     settingsOpen,
     openSettings,
     closeSettings,

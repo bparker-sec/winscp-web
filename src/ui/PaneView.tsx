@@ -24,6 +24,9 @@ interface Props {
    * would otherwise build a transfer job with the wrong src/dst FileSystem.
    */
   side?: 'local' | 'remote';
+  /** Bumped externally (e.g. when a transfer completes into this pane) to force
+   * a re-list of the current directory, without resetting cwd or selection. */
+  refreshSignal?: number;
 }
 
 // Module-level "current drag" — simpler and more robust than serializing entries
@@ -53,6 +56,7 @@ export function PaneView({
   onTransferOut,
   onDropIn,
   side,
+  refreshSignal,
 }: Props) {
   const [cwd, setCwd] = useState(initialPath);
   const [entries, setEntries] = useState<FsEntry[]>([]);
@@ -79,7 +83,7 @@ export function PaneView({
     return () => {
       alive = false;
     };
-  }, [fs, cwd, refreshKey]);
+  }, [fs, cwd, refreshKey, refreshSignal]);
 
   const runAction = async (fn: () => Promise<void>) => {
     try {

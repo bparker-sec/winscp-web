@@ -41,6 +41,8 @@ export function Commander() {
     setLocalSelection,
     setRemoteSelection,
     enqueueTransfer,
+    localRefreshNonce,
+    remoteRefreshNonce,
   } = useApp();
 
   const uploadToRemote = (entries: FsEntry[]) =>
@@ -70,6 +72,7 @@ export function Commander() {
               onSelectionChange={setLocalSelection}
               onTransferOut={uploadToRemote}
               onDropIn={downloadToLocal}
+              refreshSignal={localRefreshNonce}
             />
           ) : (
             <ConnectHint connecting={connecting} error={connectError} onConnect={connect} />
@@ -88,6 +91,7 @@ export function Commander() {
               onSelectionChange={setRemoteSelection}
               onTransferOut={downloadToLocal}
               onDropIn={uploadToRemote}
+              refreshSignal={remoteRefreshNonce}
             />
           ) : (
             <RemoteConnectHint />
