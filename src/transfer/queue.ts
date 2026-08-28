@@ -17,6 +17,14 @@ export interface TransferJob {
   state: JobState;
   bytes: number;
   error?: string;
+  /**
+   * Set once the job's first run has started. A subsequent run (via retry)
+   * resumes the transfer from the destination's current position instead of
+   * starting over; the very first attempt is always fresh.
+   */
+  attempted?: boolean;
+  /** True once this job has been retried at least once. UI hint only. */
+  retried?: boolean;
 }
 
 export type ConflictChoice = 'overwrite' | 'skip' | 'rename';
@@ -135,7 +143,10 @@ export class TransferQueue {
     if (!job) return;
     if (job.state !== 'error' && job.state !== 'cancelled') return;
     job.state = 'queued';
-    job.bytes = 0;
+    job.retried = true;
+    // Leave job.bytes as-is (not reset to 0): a resumed transfer's first
+    // onProgress reports the resumed offset, so resetting here would just
+    // cause a visual flash to 0% before jumping back up.
     job.error = undefined;
     this.emit(true);
     this.pump();
@@ -158,6 +169,13 @@ export class TransferQueue {
   private async run(job: TransferJob): Promise<void> {
     job.state = 'active';
     this.emit(true);
+
+    // Only file jobs can resume (a directory tree has no single byte offset
+    // to continue from - it just re-runs transferTree from the top, which is
+    // cheap since existing files/dirs are left alone / re-verified). The
+    // first attempt of any job is always fresh; only a retry resumes.
+    const resume = !job.isDir && job.attempted === true;
+    job.attempted = true;
 
     const controller = new AbortController();
     this.controllers.set(job.id, controller);
@@ -220,6 +238,7 @@ export class TransferQueue {
       } else {
         await transferFile(job.src, job.srcPath, job.dst, target, job.size, {
           signal: controller.signal,
+          resume,
           onProgress: (p) => {
             job.bytes = p.bytes;
             this.emit(false);

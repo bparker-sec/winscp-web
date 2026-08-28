@@ -491,6 +491,93 @@ describe('TransferQueue', () => {
     expect(next.state).toBe('done');
   });
 
+  it('resumes a retried job from its partial destination instead of restarting', async () => {
+    const full = 'x'.repeat(1000);
+    const src = new MockFS('src');
+    await writeFile(src, '/big.bin', full);
+
+    const dst = new MockFS('dst');
+    // Pre-seed a 500-byte partial destination, as if a previous crash had
+    // already gotten that much of the file to the remote side.
+    await writeFile(dst, '/big.bin', full.slice(0, 500));
+
+    let failFirstRead = true;
+    const flakySrc = wrapFs(src, {
+      openRead: async (path: string, offset?: number) => {
+        if (failFirstRead) {
+          failFirstRead = false;
+          throw new Error('simulated network drop');
+        }
+        return src.openRead(path, offset);
+      },
+    });
+
+    const openWriteCalls: Array<{ resume?: boolean }> = [];
+    const trackedDst = wrapFs(dst, {
+      openWrite: async (path: string, size?: number, opts?: { resume?: boolean }) => {
+        openWriteCalls.push({ resume: opts?.resume });
+        return dst.openWrite(path, size, opts);
+      },
+    });
+
+    const queue = new TransferQueue();
+    const id = queue.enqueue({
+      name: 'big.bin',
+      direction: 'up',
+      src: flakySrc,
+      srcPath: '/big.bin',
+      dst: trackedDst,
+      dstPath: '/big.bin',
+      size: 1000,
+      isDir: false,
+    });
+
+    const errored = await waitForState(queue, id, TERMINAL);
+    expect(errored.state).toBe('error');
+    // The pre-existing partial must survive the failed first attempt.
+    await expect(readText(dst, '/big.bin')).resolves.toBe(full.slice(0, 500));
+
+    queue.retry(id);
+    const done = await waitForState(queue, id, TERMINAL);
+    expect(done.state).toBe('done');
+
+    await expect(readText(dst, '/big.bin')).resolves.toBe(full);
+    expect(openWriteCalls.length).toBe(2);
+    expect(openWriteCalls[0].resume).toBe(false);
+    expect(openWriteCalls[1].resume).toBe(true);
+  });
+
+  it("a brand-new job's first run is fresh (resume: false), not resumed", async () => {
+    const src = new MockFS('src');
+    const dst = new MockFS('dst');
+    await writeFile(src, '/fresh.txt', 'brand new contents');
+
+    const openWriteCalls: Array<{ resume?: boolean }> = [];
+    const trackedDst = wrapFs(dst, {
+      openWrite: async (path: string, size?: number, opts?: { resume?: boolean }) => {
+        openWriteCalls.push({ resume: opts?.resume });
+        return dst.openWrite(path, size, opts);
+      },
+    });
+
+    const queue = new TransferQueue();
+    const id = queue.enqueue({
+      name: 'fresh.txt',
+      direction: 'up',
+      src,
+      srcPath: '/fresh.txt',
+      dst: trackedDst,
+      dstPath: '/fresh.txt',
+      size: 19,
+      isDir: false,
+    });
+
+    const job = await waitForState(queue, id, TERMINAL);
+    expect(job.state).toBe('done');
+    expect(openWriteCalls.length).toBe(1);
+    expect(openWriteCalls[0].resume).toBe(false);
+  });
+
   it('isolates a throwing subscriber from the queue and from other listeners', async () => {
     const src = new MockFS('src');
     const dst = new MockFS('dst');

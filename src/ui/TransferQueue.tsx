@@ -40,6 +40,11 @@ function Row({ job }: { job: TransferJob }) {
         <span>{job.direction === 'up' ? '⬆' : '⬇'}</span>
         <span className="truncate flex-1" title={job.name}>
           {job.name}
+          {job.retried && (job.state === 'active' || job.state === 'conflict' || job.state === 'done') && (
+            <span className="ml-1 text-muted" title="Resumed from a previous attempt">
+              ↻ resumed
+            </span>
+          )}
         </span>
         <div className="w-24 h-1.5 rounded bg-black/10 dark:bg-white/10 overflow-hidden shrink-0">
           <div
