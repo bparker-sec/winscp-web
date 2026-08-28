@@ -17,6 +17,13 @@ export interface TransferOptions {
   signal?: AbortSignal;
   onProgress?: (p: TransferProgress) => void;
   chunkSize?: number;
+  /**
+   * Continue an interrupted write against an existing partial destination
+   * instead of truncating it. The source is read starting at the
+   * destination's `startOffset` (0 if there was nothing to resume, or the
+   * backend doesn't support it).
+   */
+  resume?: boolean;
 }
 
 const DEFAULT_CHUNK = 256 * 1024;
@@ -35,17 +42,31 @@ export async function transferFile(
   size: number | undefined,
   opts: TransferOptions = {},
 ): Promise<void> {
-  const r = await src.openRead(srcPath);
-  let w;
+  // Note: openWrite is called before openRead here (opposite of the pre-resume
+  // ordering) so we know startOffset before deciding whether a reader is even
+  // needed — a fully-resumed destination skips opening the source entirely.
+  const w = await dst.openWrite(dstPath, size, { resume: opts.resume });
+  const start = w.startOffset;
+
+  if (size !== undefined && start >= size) {
+    // Already complete (or a stale partial that's >= the source size, which
+    // we treat as complete rather than risk corrupting it further).
+    await w.close();
+    opts.onProgress?.({ bytes: size, total: size });
+    return;
+  }
+
+  let r;
   try {
-    w = await dst.openWrite(dstPath, size);
+    r = await src.openRead(srcPath, start);
   } catch (e) {
-    await r.close().catch(() => {});
+    await w.abort().catch(() => {});
     throw e;
   }
 
   const buf = new Uint8Array(opts.chunkSize ?? DEFAULT_CHUNK);
-  let bytes = 0;
+  let bytes = start;
+  opts.onProgress?.({ bytes, total: size });
   try {
     for (;;) {
       if (opts.signal?.aborted) throw new TransferCancelled();

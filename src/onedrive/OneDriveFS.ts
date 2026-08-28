@@ -121,7 +121,7 @@ export class OneDriveFS implements FileSystem {
     }
   }
 
-  async openRead(path: string): Promise<ReadHandle> {
+  async openRead(path: string, initialOffset = 0): Promise<ReadHandle> {
     let size: number;
     try {
       const item = await getItem(this.auth, path);
@@ -131,7 +131,7 @@ export class OneDriveFS implements FileSystem {
       throw mapError(e);
     }
     const auth = this.auth;
-    let offset = 0;
+    let offset = initialOffset;
     return {
       size,
       async read(into: Uint8Array): Promise<number> {
@@ -152,12 +152,17 @@ export class OneDriveFS implements FileSystem {
     };
   }
 
-  async openWrite(path: string, size?: number): Promise<WriteHandle> {
+  // TODO(resume M3): honor opts.resume via a retained upload-session map keyed
+  // by path (GET the session URL, parse nextExpectedRanges -> startOffset) so
+  // an interrupted OneDrive upload can continue mid-session. For now every
+  // write starts fresh (startOffset 0) regardless of opts.
+  async openWrite(path: string, size?: number, _opts?: { resume?: boolean }): Promise<WriteHandle> {
     const auth = this.auth;
     // Unknown length: buffer, then upload on close.
     if (size === undefined) {
       const parts: Uint8Array[] = [];
       return {
+        startOffset: 0,
         async write(chunk) {
           parts.push(chunk.slice());
         },
@@ -195,6 +200,7 @@ export class OneDriveFS implements FileSystem {
       return url;
     };
     return {
+      startOffset: 0,
       // Callers must await each write() before the next; memory stays bounded to
       // roughly one caller chunk + FLUSH_AT.
       async write(chunk) {

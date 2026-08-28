@@ -48,9 +48,14 @@ function withWriteSpy(fs: FileSystem): {
   const calls = { aborted: false, closed: false };
   const wrapped: FileSystem = {
     ...fs,
-    openWrite: async (path: string, size?: number): Promise<WriteHandle> => {
-      const inner = await fs.openWrite(path, size);
+    openWrite: async (
+      path: string,
+      size?: number,
+      opts?: { resume?: boolean },
+    ): Promise<WriteHandle> => {
+      const inner = await fs.openWrite(path, size, opts);
       return {
+        startOffset: inner.startOffset,
         write: (chunk: Uint8Array) => inner.write(chunk),
         close: async () => {
           calls.closed = true;
@@ -119,25 +124,19 @@ describe('transferFile', () => {
     expect(progress[progress.length - 1].bytes).toBe(size);
   });
 
-  it('closes the already-open reader when openWrite fails (no leaked read handle)', async () => {
+  it('never opens the reader when openWrite fails (write is opened first, to learn startOffset)', async () => {
     const srcFs = new MockFS('src');
     const dstFs = new MockFS('dst');
     await seedLargeFile(srcFs, '/o.bin', 100);
 
-    const closeCalls = { count: 0 };
     const srcFsTyped: FileSystem = srcFs;
     const dstFsTyped: FileSystem = dstFs;
+    let openReadCalled = false;
     const spiedSrc: FileSystem = {
       ...srcFsTyped,
-      openRead: async (path: string) => {
-        const inner = await srcFsTyped.openRead(path);
-        return {
-          ...inner,
-          close: async () => {
-            closeCalls.count++;
-            return inner.close();
-          },
-        };
+      openRead: async (path: string, offset?: number) => {
+        openReadCalled = true;
+        return srcFsTyped.openRead(path, offset);
       },
     };
     const failingDst: FileSystem = {
@@ -150,7 +149,28 @@ describe('transferFile', () => {
     await expect(
       transferFile(spiedSrc, '/o.bin', failingDst, '/o.bin', 100),
     ).rejects.toThrow('openWrite boom');
-    expect(closeCalls.count).toBe(1);
+    expect(openReadCalled).toBe(false);
+  });
+
+  it('aborts the write when openRead fails after a successful openWrite', async () => {
+    const srcFs = new MockFS('src');
+    const dstFs = new MockFS('dst');
+    await seedLargeFile(srcFs, '/oe.bin', 100);
+
+    const { fs: dstFsSpy, calls } = withWriteSpy(dstFs);
+    const srcFsTyped: FileSystem = srcFs;
+    const failingSrc: FileSystem = {
+      ...srcFsTyped,
+      openRead: async () => {
+        throw new Error('openRead boom');
+      },
+    };
+
+    await expect(
+      transferFile(failingSrc, '/oe.bin', dstFsSpy, '/oe.bin', 100),
+    ).rejects.toThrow('openRead boom');
+    expect(calls.aborted).toBe(true);
+    expect(calls.closed).toBe(false);
   });
 
   it('cancels via AbortSignal: rejects with TransferCancelled and aborts (not closes) the dest', async () => {
@@ -188,9 +208,10 @@ describe('transferFile', () => {
     let writes = 0;
     const failingDst: FileSystem = {
       ...dstFs,
-      openWrite: async (path: string, s?: number) => {
-        const inner = await dstFs.openWrite(path, s);
+      openWrite: async (path: string, s?: number, opts?: { resume?: boolean }) => {
+        const inner = await dstFs.openWrite(path, s, opts);
         return {
+          startOffset: inner.startOffset,
           write: async (chunk: Uint8Array) => {
             writes++;
             if (writes === 2) throw new Error('boom');
@@ -207,6 +228,74 @@ describe('transferFile', () => {
     ).rejects.toThrow('boom');
     expect(calls.aborted).toBe(true);
     expect(calls.closed).toBe(false);
+  });
+});
+
+describe('transferFile resume', () => {
+  it('resumes a partial destination: reads the source from N onward and ends byte-exact', async () => {
+    const srcFs = new MockFS('src');
+    const dstFs = new MockFS('dst');
+    const size = 10 * 1024;
+    const data = await seedLargeFile(srcFs, '/r.bin', size);
+
+    // Pre-seed the destination with the first N bytes, simulating an interrupted transfer.
+    const N = 4096;
+    const w0 = await dstFs.openWrite('/r.bin', size);
+    await w0.write(data.subarray(0, N));
+    await w0.close();
+
+    // Wrap src to record the offset openRead was called with.
+    const srcFsTyped: FileSystem = srcFs;
+    let recordedOffset: number | undefined;
+    const spiedSrc: FileSystem = {
+      ...srcFsTyped,
+      openRead: async (path: string, offset?: number) => {
+        recordedOffset = offset;
+        return srcFsTyped.openRead(path, offset);
+      },
+    };
+
+    await transferFile(spiedSrc, '/r.bin', dstFs, '/r.bin', size, {
+      resume: true,
+      chunkSize: 512,
+    });
+
+    expect(recordedOffset).toBe(N);
+    const copied = await readAll(dstFs, '/r.bin');
+    expect(copied.byteLength).toBe(size);
+    expect(Array.from(copied)).toEqual(Array.from(data));
+  });
+
+  it('completes immediately without opening a reader when the destination already has the full file', async () => {
+    const srcFs = new MockFS('src');
+    const dstFs = new MockFS('dst');
+    const size = 2048;
+    const data = await seedLargeFile(srcFs, '/full.bin', size);
+
+    const w0 = await dstFs.openWrite('/full.bin', size);
+    await w0.write(data);
+    await w0.close();
+
+    const srcFsTyped: FileSystem = srcFs;
+    let openReadCalled = false;
+    const spiedSrc: FileSystem = {
+      ...srcFsTyped,
+      openRead: async (path: string, offset?: number) => {
+        openReadCalled = true;
+        return srcFsTyped.openRead(path, offset);
+      },
+    };
+
+    const progress: TransferProgress[] = [];
+    await transferFile(spiedSrc, '/full.bin', dstFs, '/full.bin', size, {
+      resume: true,
+      onProgress: (p) => progress.push(p),
+    });
+
+    expect(openReadCalled).toBe(false);
+    expect(progress[progress.length - 1]).toEqual({ bytes: size, total: size });
+    const copied = await readAll(dstFs, '/full.bin');
+    expect(Array.from(copied)).toEqual(Array.from(data));
   });
 });
 

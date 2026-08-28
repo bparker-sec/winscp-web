@@ -95,38 +95,50 @@ export class MockFS implements FileSystem {
     await this.rename(from, to);
   }
 
-  async openRead(path: string): Promise<ReadHandle> {
+  async openRead(path: string, offset = 0): Promise<ReadHandle> {
     const node = this.nodes.get(path);
     if (!node) throw new FsError('not-found', `No such path: ${path}`);
     if (node.entry.kind !== 'file' || !node.data) {
       throw new FsError('not-a-file', `Not a file: ${path}`);
     }
     const data = node.data;
-    let offset = 0;
+    let cursor = Math.max(0, offset);
     return {
       size: data.byteLength,
       async read(into: Uint8Array): Promise<number> {
-        if (offset >= data.byteLength) return 0;
-        const n = Math.min(into.byteLength, data.byteLength - offset);
-        into.set(data.subarray(offset, offset + n));
-        offset += n;
+        if (cursor >= data.byteLength) return 0;
+        const n = Math.min(into.byteLength, data.byteLength - cursor);
+        into.set(data.subarray(cursor, cursor + n));
+        cursor += n;
         return n;
       },
       async close() {},
     };
   }
 
-  async openWrite(path: string): Promise<WriteHandle> {
-    const chunks: Uint8Array[] = [];
+  async openWrite(
+    path: string,
+    _size?: number,
+    opts?: { resume?: boolean },
+  ): Promise<WriteHandle> {
     const nodes = this.nodes;
+    const existing = nodes.get(path);
+    const existingData =
+      opts?.resume && existing?.entry.kind === 'file' && existing.data ? existing.data : undefined;
+    const startOffset = existingData ? existingData.byteLength : 0;
+
+    const chunks: Uint8Array[] = [];
     return {
+      startOffset,
       async write(chunk: Uint8Array) {
         chunks.push(chunk.slice());
       },
       async close() {
-        const total = chunks.reduce((n, c) => n + c.byteLength, 0);
+        const appended = chunks.reduce((n, c) => n + c.byteLength, 0);
+        const total = startOffset + appended;
         const data = new Uint8Array(total);
-        let o = 0;
+        if (existingData) data.set(existingData, 0);
+        let o = startOffset;
         for (const c of chunks) {
           data.set(c, o);
           o += c.byteLength;

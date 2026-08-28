@@ -136,3 +136,81 @@ describe('MockFS streaming', () => {
     await expect(fs.openRead('/Documents')).rejects.toMatchObject({ code: 'not-a-file' });
   });
 });
+
+describe('MockFS resume support', () => {
+  it('openRead with an offset serves bytes from that offset to EOF', async () => {
+    const fs = new MockFS();
+    const w = await fs.openWrite('/off.bin');
+    await w.write(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]));
+    await w.close();
+
+    const r = await fs.openRead('/off.bin', 3);
+    const buf = new Uint8Array(10);
+    const n = await r.read(buf);
+    await r.close();
+    expect(n).toBe(5);
+    expect(Array.from(buf.subarray(0, n))).toEqual([4, 5, 6, 7, 8]);
+  });
+
+  it('openRead with offset at EOF returns 0 immediately', async () => {
+    const fs = new MockFS();
+    const w = await fs.openWrite('/eof.bin');
+    await w.write(new Uint8Array([1, 2, 3]));
+    await w.close();
+
+    const r = await fs.openRead('/eof.bin', 3);
+    expect(await r.read(new Uint8Array(10))).toBe(0);
+    await r.close();
+  });
+
+  it('openWrite without resume truncates: startOffset is 0 and old bytes are gone', async () => {
+    const fs = new MockFS();
+    const w1 = await fs.openWrite('/trunc.bin');
+    expect(w1.startOffset).toBe(0);
+    await w1.write(new Uint8Array([9, 9, 9, 9, 9]));
+    await w1.close();
+
+    const w2 = await fs.openWrite('/trunc.bin');
+    expect(w2.startOffset).toBe(0);
+    await w2.write(new Uint8Array([1, 2]));
+    await w2.close();
+
+    const r = await fs.openRead('/trunc.bin');
+    const buf = new Uint8Array(10);
+    const n = await r.read(buf);
+    await r.close();
+    expect(Array.from(buf.subarray(0, n))).toEqual([1, 2]);
+  });
+
+  it('openWrite({resume: true}) on an existing file reports startOffset = existing length and appends', async () => {
+    const fs = new MockFS();
+    const w1 = await fs.openWrite('/resume.bin');
+    await w1.write(new Uint8Array([1, 2, 3, 4]));
+    await w1.close();
+
+    const w2 = await fs.openWrite('/resume.bin', undefined, { resume: true });
+    expect(w2.startOffset).toBe(4);
+    await w2.write(new Uint8Array([5, 6]));
+    await w2.close();
+
+    const r = await fs.openRead('/resume.bin');
+    const buf = new Uint8Array(10);
+    const n = await r.read(buf);
+    await r.close();
+    expect(Array.from(buf.subarray(0, n))).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('openWrite({resume: true}) on a non-existent file behaves like a fresh write (startOffset 0)', async () => {
+    const fs = new MockFS();
+    const w = await fs.openWrite('/new-resume.bin', undefined, { resume: true });
+    expect(w.startOffset).toBe(0);
+    await w.write(new Uint8Array([7, 8]));
+    await w.close();
+
+    const r = await fs.openRead('/new-resume.bin');
+    const buf = new Uint8Array(10);
+    const n = await r.read(buf);
+    await r.close();
+    expect(Array.from(buf.subarray(0, n))).toEqual([7, 8]);
+  });
+});

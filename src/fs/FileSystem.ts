@@ -53,6 +53,14 @@ export interface WriteHandle {
    * fails. Must never throw.
    */
   abort(): Promise<void>;
+  /**
+   * The byte offset this write resumes from: 0 for a fresh write, or the
+   * number of bytes already present at the destination when `openWrite` was
+   * called with `{ resume: true }` and a prior partial write was found.
+   * Callers should read the source starting at this offset and stream only
+   * the remaining bytes into `write()`.
+   */
+  readonly startOffset: number;
 }
 
 /**
@@ -88,14 +96,23 @@ export interface FileSystem {
   remove(path: string, recursive: boolean): Promise<void>;
   /** Move within this filesystem (may be rename or copy+delete). */
   move(from: string, to: string): Promise<void>;
-  /** Open a file for streaming reads. Throws FsError('not-a-file') on a dir. */
-  openRead(path: string): Promise<ReadHandle>;
+  /**
+   * Open a file for streaming reads, starting at `offset` bytes into the
+   * file (default 0). Throws FsError('not-a-file') on a dir.
+   */
+  openRead(path: string, offset?: number): Promise<ReadHandle>;
   /**
    * Open a file for streaming writes. `size` is an optional total-length hint
    * some backends need to initiate a resumable upload; streaming backends may
    * ignore it.
+   *
+   * `opts.resume`: when true, continue an interrupted write against an
+   * existing partial destination instead of truncating it. The returned
+   * handle's `startOffset` reports how many bytes were already present (0 if
+   * there was nothing to resume, or resume was not requested); callers read
+   * the source from `startOffset` and stream only the remaining bytes.
    */
-  openWrite(path: string, size?: number): Promise<WriteHandle>;
+  openWrite(path: string, size?: number, opts?: { resume?: boolean }): Promise<WriteHandle>;
   /** Set POSIX permission bits, where supported (SFTP). */
   chmod?(path: string, mode: number): Promise<void>;
 }

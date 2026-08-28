@@ -145,11 +145,11 @@ export class SftpFS implements FileSystem {
     }
   }
 
-  async openRead(path: string): Promise<ReadHandle> {
+  async openRead(path: string, initialOffset = 0): Promise<ReadHandle> {
     try {
       const handle = await this.client.open(path, SSH_FXF_READ);
       const client = this.client;
-      let offset = 0;
+      let offset = initialOffset;
       return {
         async read(into: Uint8Array): Promise<number> {
           try {
@@ -176,12 +176,16 @@ export class SftpFS implements FileSystem {
     }
   }
 
-  async openWrite(path: string, _size?: number): Promise<WriteHandle> {
+  // TODO(resume M2): honor opts.resume by stat-ing the existing file, opening
+  // WRITE|CREAT (no TRUNC), and reporting startOffset = existing size. For now
+  // every write starts fresh (TRUNC, startOffset 0) regardless of opts.
+  async openWrite(path: string, _size?: number, _opts?: { resume?: boolean }): Promise<WriteHandle> {
     try {
       const handle = await this.client.open(path, SSH_FXF_WRITE | SSH_FXF_CREAT | SSH_FXF_TRUNC);
       const client = this.client;
       let offset = 0;
       return {
+        startOffset: 0,
         async write(chunk: Uint8Array): Promise<void> {
           try {
             await client.write(handle, offset, chunk);
