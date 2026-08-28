@@ -101,6 +101,58 @@ describe('transferFile', () => {
     expect(last.total).toBe(size);
   });
 
+  it('copies byte-exact when size is not a multiple of chunkSize (partial final chunk)', async () => {
+    const srcFs = new MockFS('src');
+    const dstFs = new MockFS('dst');
+    const size = 1000; // 256 * 3 = 768, final read returns 232 bytes
+    const data = await seedLargeFile(srcFs, '/n.bin', size);
+
+    const progress: TransferProgress[] = [];
+    await transferFile(srcFs, '/n.bin', dstFs, '/n.bin', size, {
+      chunkSize: 256,
+      onProgress: (p) => progress.push(p),
+    });
+
+    const copied = await readAll(dstFs, '/n.bin');
+    expect(copied.byteLength).toBe(size);
+    expect(Array.from(copied)).toEqual(Array.from(data));
+    expect(progress[progress.length - 1].bytes).toBe(size);
+  });
+
+  it('closes the already-open reader when openWrite fails (no leaked read handle)', async () => {
+    const srcFs = new MockFS('src');
+    const dstFs = new MockFS('dst');
+    await seedLargeFile(srcFs, '/o.bin', 100);
+
+    const closeCalls = { count: 0 };
+    const srcFsTyped: FileSystem = srcFs;
+    const dstFsTyped: FileSystem = dstFs;
+    const spiedSrc: FileSystem = {
+      ...srcFsTyped,
+      openRead: async (path: string) => {
+        const inner = await srcFsTyped.openRead(path);
+        return {
+          ...inner,
+          close: async () => {
+            closeCalls.count++;
+            return inner.close();
+          },
+        };
+      },
+    };
+    const failingDst: FileSystem = {
+      ...dstFsTyped,
+      openWrite: async () => {
+        throw new Error('openWrite boom');
+      },
+    };
+
+    await expect(
+      transferFile(spiedSrc, '/o.bin', failingDst, '/o.bin', 100),
+    ).rejects.toThrow('openWrite boom');
+    expect(closeCalls.count).toBe(1);
+  });
+
   it('cancels via AbortSignal: rejects with TransferCancelled and aborts (not closes) the dest', async () => {
     const srcFs = new MockFS('src');
     const dstFsRaw = new MockFS('dst');
