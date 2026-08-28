@@ -1,4 +1,34 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="7" fill="#2563eb"/>
-  <path d="M8 11h16M8 16h16M8 21h10" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>
+<svg width="80" height="80" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="WinSCP Web">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="80" y2="80" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#4F46E5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Badge background -->
+  <rect x="0" y="0" width="80" height="80" rx="18" fill="url(#bg)"/>
+
+  <!-- Left pane -->
+  <rect x="9" y="18" width="20" height="44" rx="4" fill="#FFFFFF"/>
+  <rect x="13" y="24" width="12" height="3" rx="1.5" fill="#94A3B8"/>
+  <rect x="13" y="30" width="12" height="3" rx="1.5" fill="#CBD5E1"/>
+  <rect x="13" y="36" width="9"  height="3" rx="1.5" fill="#CBD5E1"/>
+  <rect x="13" y="48" width="12" height="3" rx="1.5" fill="#CBD5E1"/>
+  <rect x="13" y="54" width="10" height="3" rx="1.5" fill="#CBD5E1"/>
+
+  <!-- Right pane -->
+  <rect x="51" y="18" width="20" height="44" rx="4" fill="#FFFFFF"/>
+  <rect x="55" y="24" width="12" height="3" rx="1.5" fill="#CBD5E1"/>
+  <rect x="55" y="30" width="10" height="3" rx="1.5" fill="#CBD5E1"/>
+  <rect x="55" y="36" width="12" height="3" rx="1.5" fill="#94A3B8"/>
+  <rect x="55" y="48" width="9"  height="3" rx="1.5" fill="#CBD5E1"/>
+  <rect x="55" y="54" width="12" height="3" rx="1.5" fill="#CBD5E1"/>
+
+  <!-- Bidirectional transfer arrow in the gap -->
+  <g fill="#22C55E">
+    <rect x="34" y="37" width="12" height="6" rx="3"/>
+    <path d="M29 40 L37 33.5 L37 46.5 Z"/>
+    <path d="M51 40 L43 33.5 L43 46.5 Z"/>
+  </g>
 </svg>
