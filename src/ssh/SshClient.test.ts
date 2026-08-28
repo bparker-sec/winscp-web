@@ -19,6 +19,7 @@ import {
   SSH_MSG_CHANNEL_CLOSE,
   SSH_MSG_CHANNEL_OPEN_CONFIRMATION,
   SSH_MSG_CHANNEL_SUCCESS,
+  SSH_MSG_KEXINIT,
 } from './constants';
 
 /** Records everything written and hands out a scripted queue of raw bytes on receive(). */
@@ -475,6 +476,47 @@ describe('SshClient onClosed — connection-lost signal', () => {
 });
 
 /** Decode a single wire-framed none-cipher packet back to its payload, for asserting on client-sent bytes. */
+describe('SshClient rekey — outgoing gate', () => {
+  it('holds connection-protocol sends while a rekey is in progress but lets KEX/transport through, then releases', async () => {
+    const socket = new FakeSocket(new Uint8Array(0));
+    const client = newClientWithSocket(socket);
+
+    (client as any).openRekeyGate();
+
+    // Channel data (msg 94 >= 50) must be held until the gate closes.
+    const channelData = new SshWriter().byte(SSH_MSG_CHANNEL_DATA).uint32(0).string(new Uint8Array([1, 2, 3])).finish();
+    const held = (client as any).send(channelData);
+
+    // A KEX message (KEXINIT, msg 20 < 50) flows immediately despite the gate.
+    await (client as any).send(new SshWriter().byte(SSH_MSG_KEXINIT).finish());
+    expect(socket.sentBytes).toHaveLength(1);
+    expect(decodeNoneCipherPacket(socket.sentBytes[0])[0]).toBe(SSH_MSG_KEXINIT);
+
+    // Closing the gate releases the held channel-data send.
+    (client as any).closeRekeyGate();
+    await held;
+    expect(socket.sentBytes).toHaveLength(2);
+    expect(decodeNoneCipherPacket(socket.sentBytes[1])[0]).toBe(SSH_MSG_CHANNEL_DATA);
+  });
+});
+
+describe('SshClient.requestRekey', () => {
+  it('opens the gate and sends a KEXINIT; a second call is a no-op while one is pending', async () => {
+    const socket = new FakeSocket(new Uint8Array(0));
+    const client = newClientWithSocket(socket);
+
+    await client.requestRekey();
+    expect((client as any).rekeyGate).not.toBeNull();
+    expect((client as any).sentRekeyKexInit).not.toBeNull();
+    expect(socket.sentBytes).toHaveLength(1);
+    expect(decodeNoneCipherPacket(socket.sentBytes[0])[0]).toBe(SSH_MSG_KEXINIT);
+
+    // Idempotent while a rekey is already underway — no duplicate KEXINIT.
+    await client.requestRekey();
+    expect(socket.sentBytes).toHaveLength(1);
+  });
+});
+
 function decodeNoneCipherPacket(wire: Uint8Array): Uint8Array {
   const packetLength = new DataView(wire.buffer, wire.byteOffset, 4).getUint32(0);
   const paddingLength = wire[4];

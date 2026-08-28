@@ -123,6 +123,25 @@ export class SshClient {
   private readLoopStarted = false;
   private closed = false;
 
+  // Client identification strings, retained from connect() so a later key
+  // re-exchange (rekey) can recompute the exchange hash H. The session id is the
+  // FIRST exchange hash and never changes; only H and the derived keys rotate.
+  private vClient: Uint8Array | null = null;
+  private vServer: Uint8Array | null = null;
+
+  // Rekey state (RFC 4253 §9). OpenSSH forces a key re-exchange after ~1 GiB (or
+  // ~1 h); without handling it a multi-GB transfer would stall the moment the
+  // server sends its mid-stream SSH_MSG_KEXINIT. While a rekey is in progress the
+  // gate below holds outgoing connection-protocol traffic (channel data, channel/
+  // global requests) — RFC 4253 §7.1 forbids sending anything but transport and
+  // KEX messages between our KEXINIT and our NEWKEYS. Transport/KEX messages
+  // (msg number < 50) always flow so the exchange can complete.
+  private rekeyGate: Promise<void> | null = null;
+  private rekeyGateResolve: (() => void) | null = null;
+  // Our KEXINIT payload when WE initiated the rekey (via requestRekey), so the
+  // readLoop's KEXINIT handler reuses it instead of sending a second one.
+  private sentRekeyKexInit: Uint8Array | null = null;
+
   // Serializes outgoing packets: encoding assigns the packet sequence number and
   // advances the cipher IV, and the bytes must reach the wire in that exact
   // order. Without this, a keepalive firing between two SFTP writes (or two
@@ -146,13 +165,181 @@ export class SshClient {
     this.onClosed = opts.onClosed;
   }
 
-  private send(payload: Uint8Array): Promise<void> {
+  private async send(payload: Uint8Array): Promise<void> {
+    // During a key re-exchange, hold connection-protocol traffic (channel data,
+    // channel/global requests; msg number >= 50) until the new keys are
+    // installed. Transport and KEX messages (< 50) must still flow to drive the
+    // exchange to completion. Waiting BEFORE joining the send chain means a held
+    // message doesn't occupy a chain slot ahead of the KEX messages.
+    const gate = this.rekeyGate;
+    if (gate && payload[0] >= 50) {
+      await gate;
+    }
     const run = this.sendChain.then(() =>
       this.stream.write(encodePacket(payload, this.c2sCipher, this.c2sSeq++)),
     );
     // Keep the chain alive even if a write rejects, so ordering survives errors.
     this.sendChain = run.catch(() => {});
     return run;
+  }
+
+  private openRekeyGate(): void {
+    if (this.rekeyGate) return;
+    this.rekeyGate = new Promise<void>((resolve) => {
+      this.rekeyGateResolve = resolve;
+    });
+  }
+
+  private closeRekeyGate(): void {
+    const resolve = this.rekeyGateResolve;
+    this.rekeyGate = null;
+    this.rekeyGateResolve = null;
+    resolve?.();
+  }
+
+  /** Negotiate + validate the algorithms from a server KEXINIT (initial or rekey). */
+  private negotiateAlgos(serverKex: ReturnType<typeof parseKexInit>): {
+    cipherC2S: string;
+    cipherS2C: string;
+  } {
+    const kexAlgo = negotiate(CLIENT_KEX_ALGORITHMS, serverKex.kex);
+    const hostKeyAlgo = negotiate(CLIENT_HOST_KEY_ALGORITHMS, serverKex.hostKey);
+    const cipherC2S = negotiate(CLIENT_CIPHER_ALGORITHMS, serverKex.cipherC2S);
+    const cipherS2C = negotiate(CLIENT_CIPHER_ALGORITHMS, serverKex.cipherS2C);
+    if (!kexAlgo.startsWith('curve25519-sha256')) {
+      throw new Error(`Unsupported negotiated kex algorithm: ${kexAlgo}`);
+    }
+    if (hostKeyAlgo !== 'ssh-ed25519') {
+      throw new Error(`Unsupported negotiated host-key algorithm: ${hostKeyAlgo}`);
+    }
+    if (!cipherC2S.endsWith('-gcm@openssh.com') || !cipherS2C.endsWith('-gcm@openssh.com')) {
+      throw new Error(`Unsupported negotiated cipher: c2s=${cipherC2S} s2c=${cipherS2C}`);
+    }
+    return { cipherC2S, cipherS2C };
+  }
+
+  /** Derive the per-direction GCM ciphers from a shared secret + exchange hash. */
+  private buildCiphers(
+    sharedSecret: Uint8Array,
+    h: Uint8Array,
+    cipherC2S: string,
+    cipherS2C: string,
+  ): { c2s: GcmCipher; s2c: GcmCipher } {
+    // sessionId is the FIRST exchange hash and is fixed for the connection; a
+    // rekey feeds the new H but keeps this original session id in the KDF.
+    const keys = deriveSessionKeys(sharedSecret, h, this.sessionId!);
+    // The KDF always derives 32 bytes; slice to the negotiated cipher's actual
+    // key length (16 for aes128-gcm, 32 for aes256-gcm) per direction.
+    const keyC2S = keys.keyC2S.subarray(0, gcmKeyLength(cipherC2S));
+    const keyS2C = keys.keyS2C.subarray(0, gcmKeyLength(cipherS2C));
+    return {
+      c2s: new GcmCipher(keyC2S, keys.ivC2S),
+      s2c: new GcmCipher(keyS2C, keys.ivS2C),
+    };
+  }
+
+  /**
+   * Read packets during a rekey, skipping IGNORE/DEBUG and throwing on
+   * DISCONNECT, until `expected` arrives. Any stray connection-protocol message
+   * (e.g. a data packet the server queued just before its KEXINIT) is routed to
+   * its channel rather than dropped. Never SENDS anything (unlike recvExpecting,
+   * whose GLOBAL_REQUEST reply would deadlock against the rekey gate).
+   */
+  private async recvKexPacket(expected: number): Promise<Uint8Array> {
+    for (;;) {
+      const payload = await this.recv();
+      const msgNum = payload[0];
+      if (msgNum === SSH_MSG_DISCONNECT) {
+        const { code, reason } = parseDisconnect(payload);
+        throw new SshDisconnectError(code, reason);
+      }
+      if (msgNum === SSH_MSG_IGNORE || msgNum === SSH_MSG_DEBUG) continue;
+      if (msgNum === expected) return payload;
+      this.dispatchChannelMessage(msgNum, payload);
+    }
+  }
+
+  /**
+   * Ask for a key re-exchange. Clients normally rely on the server to initiate
+   * one at its RekeyLimit, but this lets callers (and tests) force one. Opens
+   * the gate and sends our KEXINIT; the readLoop completes the exchange when the
+   * server's KEXINIT arrives. No-op if closed or a rekey is already underway.
+   */
+  async requestRekey(): Promise<void> {
+    if (this.closed || this.rekeyGate || this.sentRekeyKexInit) return;
+    this.openRekeyGate();
+    const iClient = buildKexInit(crypto.getRandomValues(new Uint8Array(16)));
+    this.sentRekeyKexInit = iClient;
+    await this.send(iClient); // KEXINIT (msg 20) — not held by the gate
+  }
+
+  /**
+   * Drive a key re-exchange to completion in response to a server (or our own)
+   * KEXINIT, delivered by the readLoop. Runs entirely within the read loop's
+   * turn, so its own recv() calls consume the following KEX packets in order.
+   * Sequence numbers continue across the rekey; only the ciphers rotate, each
+   * swapped at the exact NEWKEYS boundary for its direction.
+   */
+  private async performRekey(iServer: Uint8Array): Promise<void> {
+    this.openRekeyGate();
+    try {
+      const serverKex = parseKexInit(iServer);
+      const { cipherC2S, cipherS2C } = this.negotiateAlgos(serverKex);
+
+      // Our KEXINIT: reuse the one requestRekey() already sent (client-initiated),
+      // otherwise send one now (server-initiated).
+      let iClient = this.sentRekeyKexInit;
+      if (!iClient) {
+        iClient = buildKexInit(crypto.getRandomValues(new Uint8Array(16)));
+        await this.send(iClient);
+      }
+
+      // curve25519 ECDH.
+      const { secret, publicKey: qClient } = x25519KeyPair();
+      await this.send(new SshWriter().byte(SSH_MSG_KEX_ECDH_INIT).string(qClient).finish());
+      const replyPayload = await this.recvKexPacket(SSH_MSG_KEX_ECDH_REPLY);
+      const replyReader = new SshReader(replyPayload);
+      replyReader.byte(); // SSH_MSG_KEX_ECDH_REPLY
+      const kServer = replyReader.string();
+      const qServer = replyReader.string();
+      const sig = replyReader.string();
+
+      const sharedSecret = x25519SharedSecret(secret, qServer);
+      const h = computeExchangeHash({
+        vClient: this.vClient!,
+        vServer: this.vServer!,
+        iClient,
+        iServer,
+        kServer,
+        qClient,
+        qServer,
+        sharedSecret,
+      });
+
+      // Host key must still verify AND match the key pinned on first connect.
+      if (!verifyHostSignature(kServer, sig, h)) {
+        throw new Error('SSH rekey host-key signature verification failed.');
+      }
+      const check = checkHostKey(this.host, this.port, kServer);
+      if (check.status === 'mismatch') {
+        throw new Error(
+          `SSH host key for ${this.host}:${this.port} changed during rekey (got ${check.fingerprint}). Possible man-in-the-middle attack.`,
+        );
+      }
+
+      const { c2s, s2c } = this.buildCiphers(sharedSecret, h, cipherC2S, cipherS2C);
+
+      // NEWKEYS handshake. Both NEWKEYS are sent/received under the OLD keys;
+      // swap c2s only after ours is on the wire, and s2c only after the server's
+      // is read, so the boundary is exact in each direction.
+      await this.send(new SshWriter().byte(SSH_MSG_NEWKEYS).finish());
+      this.c2sCipher = c2s;
+      await this.recvKexPacket(SSH_MSG_NEWKEYS);
+      this.s2cCipher = s2c;
+    } finally {
+      this.sentRekeyKexInit = null;
+      this.closeRekeyGate();
+    }
   }
 
   private startKeepalive(): void {
@@ -261,6 +448,9 @@ export class SshClient {
     const { clientId, serverId } = await exchangeIdentification(this.stream);
     const vClient = new TextEncoder().encode(clientId);
     const vServer = new TextEncoder().encode(serverId);
+    // Retained for any later rekey, which recomputes H from the same V_C/V_S.
+    this.vClient = vClient;
+    this.vServer = vServer;
 
     // 2. KEXINIT exchange + negotiation.
     const cookie = crypto.getRandomValues(new Uint8Array(16));
@@ -268,20 +458,7 @@ export class SshClient {
     await this.send(iClient);
     const iServer = await this.recvExpecting((m) => m === SSH_MSG_KEXINIT);
     const serverKex = parseKexInit(iServer);
-
-    const kexAlgo = negotiate(CLIENT_KEX_ALGORITHMS, serverKex.kex);
-    const hostKeyAlgo = negotiate(CLIENT_HOST_KEY_ALGORITHMS, serverKex.hostKey);
-    const cipherC2S = negotiate(CLIENT_CIPHER_ALGORITHMS, serverKex.cipherC2S);
-    const cipherS2C = negotiate(CLIENT_CIPHER_ALGORITHMS, serverKex.cipherS2C);
-    if (!kexAlgo.startsWith('curve25519-sha256')) {
-      throw new Error(`Unsupported negotiated kex algorithm: ${kexAlgo}`);
-    }
-    if (hostKeyAlgo !== 'ssh-ed25519') {
-      throw new Error(`Unsupported negotiated host-key algorithm: ${hostKeyAlgo}`);
-    }
-    if (!cipherC2S.endsWith('-gcm@openssh.com') || !cipherS2C.endsWith('-gcm@openssh.com')) {
-      throw new Error(`Unsupported negotiated cipher: c2s=${cipherC2S} s2c=${cipherS2C}`);
-    }
+    const { cipherC2S, cipherS2C } = this.negotiateAlgos(serverKex);
 
     // 3. curve25519 ECDH.
     const { secret, publicKey: qClient } = x25519KeyPair();
@@ -330,14 +507,9 @@ export class SshClient {
     await this.send(new SshWriter().byte(SSH_MSG_NEWKEYS).finish());
     await this.recvExpecting((m) => m === SSH_MSG_NEWKEYS);
 
-    const keys = deriveSessionKeys(sharedSecret, h, this.sessionId);
-    // The KDF always derives 32 bytes of key material; slice to the negotiated
-    // cipher's actual key length (16 for aes128-gcm, 32 for aes256-gcm) per
-    // direction — @noble/ciphers picks AES-128 vs AES-256 by key length.
-    const keyC2S = keys.keyC2S.subarray(0, gcmKeyLength(cipherC2S));
-    const keyS2C = keys.keyS2C.subarray(0, gcmKeyLength(cipherS2C));
-    this.c2sCipher = new GcmCipher(keyC2S, keys.ivC2S);
-    this.s2cCipher = new GcmCipher(keyS2C, keys.ivS2C);
+    const { c2s, s2c } = this.buildCiphers(sharedSecret, h, cipherC2S, cipherS2C);
+    this.c2sCipher = c2s;
+    this.s2cCipher = s2c;
 
     return { fingerprint: check.fingerprint };
   }
@@ -429,6 +601,13 @@ export class SshClient {
           const { code, reason } = parseDisconnect(payload);
           this.teardownChannels(new SshDisconnectError(code, reason));
           return;
+        }
+        if (msgNum === SSH_MSG_KEXINIT) {
+          // Server-initiated (or reply to our) key re-exchange. Drive it to
+          // completion before resuming normal dispatch; new keys take effect
+          // atomically at the NEWKEYS boundary.
+          await this.performRekey(payload);
+          continue;
         }
         if (msgNum === SSH_MSG_GLOBAL_REQUEST) {
           await this.handleGlobalRequest(payload);
