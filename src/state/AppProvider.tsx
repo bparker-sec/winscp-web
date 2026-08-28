@@ -414,21 +414,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Transfers
   const [jobs, setJobs] = useState<TransferJob[]>([]);
   const [conflictPrompt, setConflictPrompt] = useState<ConflictPromptState | null>(null);
-  const conflictResolverRef = useRef<((choice: ConflictChoice) => void) | null>(null);
+  // A FIFO of pending conflicts — the queue runs with concurrency > 1, so more than
+  // one job can hit a conflict at once. A single-slot resolver would let the 2nd
+  // conflict overwrite the 1st's resolver, orphaning that job in 'conflict' forever
+  // (its slot never frees). Serialize instead: one dialog at a time, in order.
+  const conflictQueueRef = useRef<Array<{ name: string; resolve: (choice: ConflictChoice) => void }>>([]);
   const appliedChoiceRef = useRef<ConflictChoice | null>(null);
 
   const queue = useMemo(
     () =>
       new TransferQueue({
-        conflict: (job) => {
-          if (appliedChoiceRef.current) {
-            return Promise.resolve(appliedChoiceRef.current);
-          }
-          return new Promise<ConflictChoice>((resolve) => {
-            conflictResolverRef.current = resolve;
-            setConflictPrompt({ name: job.name });
-          });
-        },
+        conflict: (job) =>
+          new Promise<ConflictChoice>((resolve) => {
+            if (appliedChoiceRef.current) {
+              resolve(appliedChoiceRef.current);
+              return;
+            }
+            conflictQueueRef.current.push({ name: job.name, resolve });
+            if (conflictQueueRef.current.length === 1) setConflictPrompt({ name: job.name });
+          }),
       }),
     [],
   );
@@ -437,23 +441,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return queue.subscribe((snapshot) => {
       setJobs(snapshot);
       const busy = snapshot.some((j) => j.state === 'queued' || j.state === 'active' || j.state === 'conflict');
-      if (!busy) appliedChoiceRef.current = null;
+      if (!busy) {
+        // The whole batch is done — forget any "apply to all" choice and any
+        // leftover pending conflicts (there shouldn't be any once idle, but this
+        // is cheap hygiene against a stray future bug).
+        appliedChoiceRef.current = null;
+        conflictQueueRef.current = [];
+      }
     });
   }, [queue]);
 
   const resolveConflict = useCallback((choice: ConflictChoice, applyToAll: boolean) => {
-    if (applyToAll) appliedChoiceRef.current = choice;
-    setConflictPrompt(null);
-    const resolver = conflictResolverRef.current;
-    conflictResolverRef.current = null;
-    resolver?.(choice);
+    const head = conflictQueueRef.current.shift();
+    head?.resolve(choice);
+    if (applyToAll) {
+      appliedChoiceRef.current = choice;
+      const rest = conflictQueueRef.current;
+      conflictQueueRef.current = [];
+      rest.forEach((p) => p.resolve(choice));
+      setConflictPrompt(null);
+    } else {
+      const next = conflictQueueRef.current[0];
+      setConflictPrompt(next ? { name: next.name } : null);
+    }
   }, []);
 
   const enqueueTransfer = useCallback(
     (opts: { from: 'local' | 'remote'; entries: FsEntry[]; toDir: string }) => {
       if (!local || !remote) return;
-      // A new upload/download batch starts fresh — forget any prior "apply to all" choice.
-      appliedChoiceRef.current = null;
       const src = opts.from === 'local' ? local : remote;
       const dst = opts.from === 'local' ? remote : local;
       const direction = opts.from === 'local' ? 'up' : 'down';

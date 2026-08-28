@@ -180,8 +180,21 @@ export class TransferQueue {
         if (exists) {
           job.state = 'conflict';
           this.emit(true);
-          const choice = await this.conflict(job);
-          if (controller.signal.aborted) throw new TransferCancelled();
+          // Race the conflict resolution against cancellation: cancel() during
+          // 'conflict' only aborts the signal — nothing else was listening to it
+          // while we sat here awaiting the resolver, so a cancel would otherwise
+          // never unblock this job (it would hang in 'conflict' forever).
+          const choice = await Promise.race<ConflictChoice | 'cancel'>([
+            this.conflict(job),
+            new Promise<'cancel'>((resolve) => {
+              if (controller.signal.aborted) {
+                resolve('cancel');
+                return;
+              }
+              controller.signal.addEventListener('abort', () => resolve('cancel'), { once: true });
+            }),
+          ]);
+          if (choice === 'cancel' || controller.signal.aborted) throw new TransferCancelled();
           if (choice === 'skip') {
             job.state = 'skipped';
             this.emit(true);

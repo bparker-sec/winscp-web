@@ -70,6 +70,7 @@ export function Commander() {
             <PaneView
               fs={local}
               header={local.label}
+              side="local"
               onCwdChange={setLocalCwd}
               onSelectionChange={setLocalSelection}
               onTransferOut={uploadToRemote}
@@ -86,6 +87,7 @@ export function Commander() {
               fs={remote}
               header={remote.label}
               initialPath={remoteHome}
+              side="remote"
               onDisconnect={remoteDisconnect}
               onCwdChange={setRemoteCwd}
               onSelectionChange={setRemoteSelection}

@@ -14,13 +14,20 @@ interface Props {
   onCwdChange?: (path: string) => void;
   /** Invoked when the user asks to send the current selection to the other pane (F5, or dragging out). */
   onTransferOut?: (entries: FsEntry[]) => void;
-  /** Invoked when entries dragged out of another pane are dropped onto this one. */
+  /** Invoked when entries dragged out of the OTHER pane are dropped onto this one. */
   onDropIn?: (entries: FsEntry[]) => void;
+  /**
+   * Which side this pane represents. Used to guard against a same-pane
+   * self-drop (dragging within one pane and dropping back onto it), which
+   * would otherwise build a transfer job with the wrong src/dst FileSystem.
+   */
+  side?: 'local' | 'remote';
 }
 
 // Module-level "current drag" — simpler and more robust than serializing entries
 // through the HTML5 dataTransfer payload (which can't carry arbitrary objects).
-let currentDrag: { entries: FsEntry[] } | null = null;
+// Records the drag's source side so a drop handler can refuse a same-pane drop.
+let currentDrag: { side?: 'local' | 'remote'; entries: FsEntry[] } | null = null;
 
 function fmtSize(n?: number): string {
   if (n === undefined) return '';
@@ -43,6 +50,7 @@ export function PaneView({
   onCwdChange,
   onTransferOut,
   onDropIn,
+  side,
 }: Props) {
   const [cwd, setCwd] = useState(initialPath);
   const [entries, setEntries] = useState<FsEntry[]>([]);
@@ -132,7 +140,7 @@ export function PaneView({
 
   const handleDragStart = (e: FsEntry, evt: React.DragEvent) => {
     const dragEntries = selected.has(e.path) && selectedEntries.length ? selectedEntries : [e];
-    currentDrag = { entries: dragEntries };
+    currentDrag = { side, entries: dragEntries };
     evt.dataTransfer.effectAllowed = 'copy';
     try {
       evt.dataTransfer.setData('text/plain', dragEntries.map((x) => x.name).join(', '));
@@ -152,7 +160,12 @@ export function PaneView({
     evt.preventDefault();
     const drag = currentDrag;
     currentDrag = null;
-    if (drag && drag.entries.length) onDropIn(drag.entries);
+    if (!drag || !drag.entries.length) return;
+    // Guard against a same-pane self-drop: dragging within one pane and dropping
+    // back onto it would otherwise build a transfer job against the wrong
+    // src/dst FileSystem (this pane's own fs on both ends).
+    if (side !== undefined && drag.side === side) return;
+    onDropIn(drag.entries);
   };
 
   return (

@@ -3,6 +3,9 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import { AppProvider, useApp } from './AppProvider';
 import { connectSftp } from '../sftp/SftpConnection';
 import { rememberHost } from '../ssh/knownhosts';
+import { connectOneDrive } from '../onedrive/auth';
+import { MockFS } from '../fs/MockFS';
+import type { FileSystem } from '../fs/FileSystem';
 
 vi.mock('../sftp/SftpConnection', () => ({
   connectSftp: vi.fn(),
@@ -23,8 +26,18 @@ vi.mock('../sdk/client', () => ({
   sdkGetUser: vi.fn(async () => null),
 }));
 
+// The conflict-wiring tests below need a real, working "local" FileSystem
+// (enqueueTransfer no-ops unless both local and remote are non-null). Rather
+// than exercise the real OneDrive Graph client, swap in a plain MockFS instance
+// whenever the provider constructs its OneDriveFS.
+let localFsForOneDriveMock: FileSystem = new MockFS('local');
+vi.mock('../onedrive/OneDriveFS', () => ({
+  OneDriveFS: vi.fn().mockImplementation(() => localFsForOneDriveMock),
+}));
+
 const mockConnectSftp = connectSftp as unknown as ReturnType<typeof vi.fn>;
 const mockRememberHost = rememberHost as unknown as ReturnType<typeof vi.fn>;
+const mockConnectOneDrive = connectOneDrive as unknown as ReturnType<typeof vi.fn>;
 
 function setupHook() {
   return renderHook(() => useApp(), {
@@ -206,5 +219,93 @@ describe('AppProvider remote connection state machine', () => {
     expect(result.current.remote).toBeNull();
 
     vi.useRealTimers();
+  });
+});
+
+describe('AppProvider conflict-resolver wiring', () => {
+  beforeEach(() => {
+    mockConnectSftp.mockReset();
+    mockRememberHost.mockReset();
+    mockConnectOneDrive.mockReset();
+    localFsForOneDriveMock = new MockFS('local');
+  });
+
+  /** Signs in "local" (a MockFS) and connects "remote" (another MockFS), both seeded identically. */
+  async function connectBothSides() {
+    mockConnectOneDrive.mockResolvedValue({ ok: true });
+    const remoteFs = new MockFS('remote');
+    const close = vi.fn(async () => {});
+    mockConnectSftp.mockResolvedValue({ fs: remoteFs, fingerprint: 'SHA256:x', home: '/', close });
+
+    const { result } = setupHook();
+
+    act(() => {
+      result.current.connect();
+    });
+    await waitFor(() => expect(result.current.local).not.toBeNull());
+
+    act(() => {
+      result.current.remoteConnect({ host: 'example.com', port: 22, username: 'bob', password: 'x' });
+    });
+    await waitFor(() => expect(result.current.remote).not.toBeNull());
+
+    return result;
+  }
+
+  it('a single conflict: resolveConflict(overwrite, false) lets the job complete', async () => {
+    const result = await connectBothSides();
+
+    const entry = await result.current.local!.stat('/readme.md');
+    act(() => {
+      result.current.enqueueTransfer({ from: 'local', entries: [entry], toDir: '/' });
+    });
+
+    await waitFor(() => expect(result.current.conflictPrompt).not.toBeNull());
+    expect(result.current.conflictPrompt?.name).toBe('readme.md');
+
+    act(() => {
+      result.current.resolveConflict('overwrite', false);
+    });
+
+    await waitFor(() => {
+      const job = result.current.jobs.find((j) => j.name === 'readme.md');
+      expect(job?.state).toBe('done');
+    });
+    expect(result.current.conflictPrompt).toBeNull();
+  });
+
+  it('two conflicting jobs: the second conflict prompt shows only after the first is resolved', async () => {
+    const result = await connectBothSides();
+
+    const notes = await result.current.local!.stat('/Documents/notes.txt');
+    const budget = await result.current.local!.stat('/Documents/budget.xlsx');
+    act(() => {
+      result.current.enqueueTransfer({ from: 'local', entries: [notes, budget], toDir: '/Documents' });
+    });
+
+    await waitFor(() => expect(result.current.conflictPrompt).not.toBeNull());
+    const firstName = result.current.conflictPrompt?.name;
+    expect(['notes.txt', 'budget.xlsx']).toContain(firstName);
+
+    act(() => {
+      result.current.resolveConflict('overwrite', false);
+    });
+
+    await waitFor(() => {
+      expect(result.current.conflictPrompt).not.toBeNull();
+      expect(result.current.conflictPrompt?.name).not.toBe(firstName);
+    });
+    const secondName = result.current.conflictPrompt!.name;
+    expect(['notes.txt', 'budget.xlsx']).toContain(secondName);
+    expect(secondName).not.toBe(firstName);
+
+    act(() => {
+      result.current.resolveConflict('overwrite', false);
+    });
+
+    await waitFor(() => {
+      expect(result.current.jobs.every((j) => j.state === 'done')).toBe(true);
+    });
+    expect(result.current.conflictPrompt).toBeNull();
   });
 });

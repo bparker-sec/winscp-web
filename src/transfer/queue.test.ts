@@ -392,6 +392,105 @@ describe('TransferQueue', () => {
     expect(seenStates).toContain('done');
   });
 
+  it('does not orphan a job when two conflicts happen concurrently (serialized resolver)', async () => {
+    const src = new MockFS('src');
+    const dst = new MockFS('dst');
+    await writeFile(src, '/a.txt', 'new a');
+    await writeFile(src, '/b.txt', 'new b');
+    await writeFile(dst, '/a.txt', 'old a');
+    await writeFile(dst, '/b.txt', 'old b');
+
+    // A resolver that answers every job it's asked about — but only one job at a
+    // time reaches it if the queue serializes correctly (concurrency 2 means both
+    // jobs hit 'conflict' around the same time in a naive single-slot resolver).
+    const seen: string[] = [];
+    const queue = new TransferQueue({
+      concurrency: 2,
+      conflict: async (job) => {
+        seen.push(job.name);
+        return 'overwrite';
+      },
+    });
+
+    const idA = queue.enqueue({
+      name: 'a.txt',
+      direction: 'up',
+      src,
+      srcPath: '/a.txt',
+      dst,
+      dstPath: '/a.txt',
+      size: 5,
+      isDir: false,
+    });
+    const idB = queue.enqueue({
+      name: 'b.txt',
+      direction: 'up',
+      src,
+      srcPath: '/b.txt',
+      dst,
+      dstPath: '/b.txt',
+      size: 5,
+      isDir: false,
+    });
+
+    const [jobA, jobB] = await Promise.all([
+      waitForState(queue, idA, TERMINAL),
+      waitForState(queue, idB, TERMINAL),
+    ]);
+
+    // Neither job may be orphaned in 'conflict' forever — both must reach a
+    // terminal state.
+    expect(jobA.state).toBe('done');
+    expect(jobB.state).toBe('done');
+    expect(seen.sort()).toEqual(['a.txt', 'b.txt']);
+  });
+
+  it('cancelling a job while it awaits the conflict resolver frees its slot', async () => {
+    const src = new MockFS('src');
+    const dst = new MockFS('dst');
+    await writeFile(src, '/blocked.txt', 'new contents');
+    await writeFile(dst, '/blocked.txt', 'old contents');
+    await writeFile(src, '/next.txt', 'next job contents');
+
+    // A resolver that never answers — the only way `blocked.txt` can leave
+    // 'conflict' is via queue.cancel().
+    const queue = new TransferQueue({ concurrency: 1, conflict: () => new Promise(() => {}) });
+
+    const blockedId = queue.enqueue({
+      name: 'blocked.txt',
+      direction: 'up',
+      src,
+      srcPath: '/blocked.txt',
+      dst,
+      dstPath: '/blocked.txt',
+      size: 12,
+      isDir: false,
+    });
+    const nextId = queue.enqueue({
+      name: 'next.txt',
+      direction: 'up',
+      src,
+      srcPath: '/next.txt',
+      dst,
+      dstPath: '/next.txt',
+      size: 18,
+      isDir: false,
+    });
+
+    await waitForState(queue, blockedId, ['conflict']);
+    // With concurrency 1 and the first job stuck in 'conflict', the second must
+    // still be queued.
+    expect(queue.jobs().find((j) => j.id === nextId)?.state).toBe('queued');
+
+    queue.cancel(blockedId);
+    const cancelled = await waitForState(queue, blockedId, TERMINAL);
+    expect(cancelled.state).toBe('cancelled');
+
+    // The slot must free so the next queued job actually runs.
+    const next = await waitForState(queue, nextId, TERMINAL);
+    expect(next.state).toBe('done');
+  });
+
   it('isolates a throwing subscriber from the queue and from other listeners', async () => {
     const src = new MockFS('src');
     const dst = new MockFS('dst');
