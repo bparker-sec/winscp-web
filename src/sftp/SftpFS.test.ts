@@ -4,6 +4,7 @@ import type { FileAttrs } from './attrs';
 import { SftpError } from './SftpClient';
 import { attrsToEntry, kindFromMode, mapSftpError, SftpFS } from './SftpFS';
 import {
+  MAX_SFTP_PAYLOAD,
   SSH_FX_FAILURE,
   SSH_FX_NO_SUCH_FILE,
   SSH_FX_PERMISSION_DENIED,
@@ -268,6 +269,18 @@ describe('SftpFS.openRead', () => {
     expect(client.readCalls.map((c) => c.offset)).toEqual([0, 3, 5]);
     expect(client.closeHandleCalls).toHaveLength(1);
   });
+
+  it('never requests more than the SFTP message cap even for a larger buffer', async () => {
+    const client = new FakeSftpClient();
+    client.setReadChunks([new Uint8Array(MAX_SFTP_PAYLOAD), null]);
+    const fs = makeFS(client);
+
+    const rh = await fs.openRead('/f.bin');
+    const buf = new Uint8Array(MAX_SFTP_PAYLOAD * 2); // oversized destination
+    await rh.read(buf);
+
+    expect(client.readCalls[0].length).toBeLessThanOrEqual(MAX_SFTP_PAYLOAD);
+  });
 });
 
 describe('SftpFS.openWrite', () => {
@@ -287,6 +300,50 @@ describe('SftpFS.openWrite', () => {
     expect(client.writeCalls[1].offset).toBe(4);
     expect(client.writeCalls[1].data).toEqual(chunk2);
     expect(client.closeHandleCalls).toHaveLength(1);
+  });
+
+  it('splits a chunk larger than the SFTP message cap into multiple writes, byte-exact', async () => {
+    const client = new FakeSftpClient();
+    const fs = makeFS(client);
+
+    // A single caller chunk bigger than one SFTP message can carry. Each byte is
+    // its index mod 256 so we can verify the reassembled payload is byte-exact.
+    const big = new Uint8Array(MAX_SFTP_PAYLOAD * 2 + 500);
+    for (let i = 0; i < big.length; i++) big[i] = i & 0xff;
+
+    const wh = await fs.openWrite('/big.bin');
+    await wh.write(big);
+    await wh.close();
+
+    // Every WRITE must stay within the cap or the server aborts the channel.
+    for (const call of client.writeCalls) {
+      expect(call.data.length).toBeLessThanOrEqual(MAX_SFTP_PAYLOAD);
+    }
+    expect(client.writeCalls).toHaveLength(3);
+    expect(client.writeCalls.map((c) => c.offset)).toEqual([
+      0,
+      MAX_SFTP_PAYLOAD,
+      MAX_SFTP_PAYLOAD * 2,
+    ]);
+
+    // Reassemble and compare to the original.
+    const reassembled = new Uint8Array(big.length);
+    for (const call of client.writeCalls) reassembled.set(call.data, call.offset);
+    expect(reassembled).toEqual(big);
+  });
+
+  it('advances the offset correctly across a split write followed by another write', async () => {
+    const client = new FakeSftpClient();
+    const fs = makeFS(client);
+
+    const wh = await fs.openWrite('/out.bin');
+    await wh.write(new Uint8Array(MAX_SFTP_PAYLOAD + 10)); // splits into 2
+    await wh.write(new Uint8Array([1, 2, 3]));
+    await wh.close();
+
+    const last = client.writeCalls[client.writeCalls.length - 1];
+    expect(last.offset).toBe(MAX_SFTP_PAYLOAD + 10);
+    expect(last.data).toEqual(new Uint8Array([1, 2, 3]));
   });
 
   it('non-resume: opens with TRUNC and startOffset is 0', async () => {

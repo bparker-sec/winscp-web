@@ -4,7 +4,7 @@ import { FsError, joinPath, sortEntries, type FileSystem, type FsEntry, type Rea
 import type { SftpClient } from './SftpClient';
 import { SftpError } from './SftpClient';
 import type { FileAttrs } from './attrs';
-import { SSH_FX_FAILURE, SSH_FX_NO_SUCH_FILE, SSH_FX_OP_UNSUPPORTED, SSH_FX_PERMISSION_DENIED, SSH_FXF_CREAT, SSH_FXF_READ, SSH_FXF_TRUNC, SSH_FXF_WRITE } from './constants';
+import { MAX_SFTP_PAYLOAD, SSH_FX_FAILURE, SSH_FX_NO_SUCH_FILE, SSH_FX_OP_UNSUPPORTED, SSH_FX_PERMISSION_DENIED, SSH_FXF_CREAT, SSH_FXF_READ, SSH_FXF_TRUNC, SSH_FXF_WRITE } from './constants';
 
 const S_IFMT = 0o170000;
 const S_IFDIR = 0o040000;
@@ -153,7 +153,11 @@ export class SftpFS implements FileSystem {
       return {
         async read(into: Uint8Array): Promise<number> {
           try {
-            const chunk = await client.read(handle, offset, into.byteLength);
+            // Cap the request so the server's DATA response never exceeds the
+            // SFTP message limit. Short reads are expected and handled by the
+            // caller looping until 0.
+            const want = Math.min(into.byteLength, MAX_SFTP_PAYLOAD);
+            const chunk = await client.read(handle, offset, want);
             if (chunk === null) return 0;
             const n = Math.min(chunk.length, into.byteLength);
             into.set(chunk.subarray(0, n));
@@ -204,8 +208,16 @@ export class SftpFS implements FileSystem {
         startOffset,
         async write(chunk: Uint8Array): Promise<void> {
           try {
-            await client.write(handle, offset, chunk);
-            offset += chunk.length;
+            // Split into sub-chunks that fit within a single SFTP message.
+            // A WRITE larger than the server's cap (OpenSSH: 256 KiB total,
+            // header included) makes sftp-server abort the whole channel, which
+            // is why large-file uploads previously died mid-transfer. This makes
+            // correctness independent of the caller's chunk size.
+            for (let pos = 0; pos < chunk.length; pos += MAX_SFTP_PAYLOAD) {
+              const slice = chunk.subarray(pos, pos + MAX_SFTP_PAYLOAD);
+              await client.write(handle, offset, slice);
+              offset += slice.length;
+            }
           } catch (e) {
             throw mapSftpError(e);
           }

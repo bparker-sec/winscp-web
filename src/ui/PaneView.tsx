@@ -313,27 +313,34 @@ export function PaneView({
       </div>
       <div className="flex-1 min-h-0 overflow-auto font-mono text-[12px]">
         {error && <div className="px-2 py-2 text-danger">{error}</div>}
-        {rows.map((e) => (
-          <div
-            key={e.path}
-            draggable
-            className={`grid grid-cols-[1fr_80px_130px] px-2 py-0.5 cursor-default border-l-2 ${
-              selected.has(e.path)
-                ? 'selected bg-accent/30 border-accent text-fg font-medium'
-                : 'border-transparent hover:bg-accent/10'
-            }`}
-            onClick={(evt) => selectRow(e, evt)}
-            onDoubleClick={() => e.kind === 'dir' && setCwd(e.path)}
-            onDragStart={(evt) => handleDragStart(e, evt)}
-          >
-            <span className="flex items-center gap-1 truncate">
-              {e.kind === 'dir' ? <IconFolder /> : <IconFile />}
-              {e.name}
-            </span>
-            <span className="text-right text-muted">{e.kind === 'dir' ? '' : fmtSize(e.size)}</span>
-            <span className="text-right text-muted">{fmtDate(e.mtime)}</span>
-          </div>
-        ))}
+        {rows.map((e) => {
+          const isSel = selected.has(e.path);
+          return (
+            <div
+              key={e.path}
+              draggable
+              className={`grid grid-cols-[1fr_80px_130px] px-2 py-0.5 cursor-default border-l-2 ${
+                isSel
+                  ? 'selected bg-accent border-accent text-accent-fg font-medium'
+                  : 'border-transparent hover:bg-accent/10'
+              }`}
+              onClick={(evt) => selectRow(e, evt)}
+              onDoubleClick={() => e.kind === 'dir' && setCwd(e.path)}
+              onDragStart={(evt) => handleDragStart(e, evt)}
+            >
+              <span className="flex items-center gap-1 truncate">
+                {e.kind === 'dir' ? <IconFolder /> : <IconFile />}
+                {e.name}
+              </span>
+              <span className={`text-right ${isSel ? 'text-accent-fg/80' : 'text-muted'}`}>
+                {e.kind === 'dir' ? '' : fmtSize(e.size)}
+              </span>
+              <span className={`text-right ${isSel ? 'text-accent-fg/80' : 'text-muted'}`}>
+                {fmtDate(e.mtime)}
+              </span>
+            </div>
+          );
+        })}
       </div>
       {showNewFolder && (
         <PromptModal

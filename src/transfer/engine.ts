@@ -26,7 +26,14 @@ export interface TransferOptions {
   resume?: boolean;
 }
 
-const DEFAULT_CHUNK = 256 * 1024;
+// 255 KiB, not 256: it matches the SFTP layer's per-message payload cap
+// (MAX_SFTP_PAYLOAD), so an SFTP upload sends exactly one WRITE per chunk. A
+// 256 KiB chunk would overflow the SFTP message limit and be split into a
+// 255 KiB + 1 KiB pair, and because transfers aren't pipelined that tiny second
+// write costs a full round-trip — roughly halving WAN throughput. Backends that
+// re-buffer (e.g. OneDrive's 320 KiB-aligned upload) are unaffected by the exact
+// value.
+const DEFAULT_CHUNK = 255 * 1024;
 
 /**
  * Stream one file from `src`/`srcPath` to `dst`/`dstPath`, chunk by chunk.

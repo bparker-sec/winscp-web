@@ -42,6 +42,18 @@ export const SSH_FXF_CREAT = 0x8;
 export const SSH_FXF_TRUNC = 0x10;
 export const SSH_FXF_EXCL = 0x20;
 
+// Maximum data payload carried by a single SFTP READ/WRITE.
+//
+// OpenSSH's sftp-server caps a whole SFTP message at SFTP_MAX_MSG_LENGTH
+// (256 KiB) and ABORTS the channel on anything larger. A WRITE frames ~25 bytes
+// of header (type + request-id + handle + 64-bit offset + data length) around
+// the payload, so a full 256 KiB data chunk overflows the cap and the server
+// drops the connection mid-transfer. 255 KiB leaves ample headroom for the
+// header and matches the max-read/write-length OpenSSH advertises via its
+// limits@openssh.com extension. Callers may hand larger buffers; the SFTP layer
+// splits them across multiple requests so no single message exceeds this.
+export const MAX_SFTP_PAYLOAD = 255 * 1024;
+
 // STATUS codes.
 export const SSH_FX_OK = 0;
 export const SSH_FX_EOF = 1;
