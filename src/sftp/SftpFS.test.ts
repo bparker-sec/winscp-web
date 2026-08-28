@@ -3,7 +3,14 @@ import { FsError } from '../fs/FileSystem';
 import type { FileAttrs } from './attrs';
 import { SftpError } from './SftpClient';
 import { attrsToEntry, kindFromMode, mapSftpError, SftpFS } from './SftpFS';
-import { SSH_FX_FAILURE, SSH_FX_NO_SUCH_FILE, SSH_FX_PERMISSION_DENIED } from './constants';
+import {
+  SSH_FX_FAILURE,
+  SSH_FX_NO_SUCH_FILE,
+  SSH_FX_PERMISSION_DENIED,
+  SSH_FXF_CREAT,
+  SSH_FXF_TRUNC,
+  SSH_FXF_WRITE,
+} from './constants';
 
 const S_IFDIR = 0o040000;
 const S_IFREG = 0o100000;
@@ -280,6 +287,64 @@ describe('SftpFS.openWrite', () => {
     expect(client.writeCalls[1].offset).toBe(4);
     expect(client.writeCalls[1].data).toEqual(chunk2);
     expect(client.closeHandleCalls).toHaveLength(1);
+  });
+
+  it('non-resume: opens with TRUNC and startOffset is 0', async () => {
+    const client = new FakeSftpClient();
+    const fs = makeFS(client);
+
+    const wh = await fs.openWrite('/out.bin', undefined, { resume: false });
+
+    expect(wh.startOffset).toBe(0);
+    expect(client.openCalls).toEqual([{ path: '/out.bin', pflags: SSH_FXF_WRITE | SSH_FXF_CREAT | SSH_FXF_TRUNC }]);
+    expect(client.statCalls).toEqual([]);
+
+    await wh.write(new Uint8Array([1, 2, 3]));
+    expect(client.writeCalls[0].offset).toBe(0);
+  });
+
+  it('resume on an existing remote file: startOffset = remote size, opens WITHOUT TRUNC, writes from that offset', async () => {
+    const client = new FakeSftpClient();
+    client.setStatResult({ size: 100 });
+    const fs = makeFS(client);
+
+    const wh = await fs.openWrite('/out.bin', undefined, { resume: true });
+
+    expect(wh.startOffset).toBe(100);
+    expect(client.statCalls).toEqual(['/out.bin']);
+    expect(client.openCalls).toEqual([{ path: '/out.bin', pflags: SSH_FXF_WRITE | SSH_FXF_CREAT }]);
+    // No TRUNC bit present.
+    expect(client.openCalls[0].pflags & SSH_FXF_TRUNC).toBe(0);
+
+    await wh.write(new Uint8Array([9, 9]));
+    expect(client.writeCalls[0].offset).toBe(100);
+    await wh.close();
+    expect(client.closeHandleCalls).toHaveLength(1);
+  });
+
+  it('resume when the remote file does not exist: startOffset 0, opens WITHOUT TRUNC, writes at 0', async () => {
+    const client = new FakeSftpClient();
+    client.setStatResult(new SftpError(SSH_FX_NO_SUCH_FILE, 'no such file'));
+    const fs = makeFS(client);
+
+    const wh = await fs.openWrite('/new.bin', undefined, { resume: true });
+
+    expect(wh.startOffset).toBe(0);
+    expect(client.openCalls).toEqual([{ path: '/new.bin', pflags: SSH_FXF_WRITE | SSH_FXF_CREAT }]);
+    expect(client.openCalls[0].pflags & SSH_FXF_TRUNC).toBe(0);
+
+    await wh.write(new Uint8Array([7]));
+    expect(client.writeCalls[0].offset).toBe(0);
+  });
+
+  it('resume: a non-NO_SUCH_FILE stat error propagates as a mapped FsError', async () => {
+    const client = new FakeSftpClient();
+    client.setStatResult(new SftpError(SSH_FX_PERMISSION_DENIED, 'denied'));
+    const fs = makeFS(client);
+
+    await expect(fs.openWrite('/secret.bin', undefined, { resume: true })).rejects.toMatchObject({
+      code: 'permission',
+    });
   });
 });
 

@@ -176,16 +176,32 @@ export class SftpFS implements FileSystem {
     }
   }
 
-  // TODO(resume M2): honor opts.resume by stat-ing the existing file, opening
-  // WRITE|CREAT (no TRUNC), and reporting startOffset = existing size. For now
-  // every write starts fresh (TRUNC, startOffset 0) regardless of opts.
-  async openWrite(path: string, _size?: number, _opts?: { resume?: boolean }): Promise<WriteHandle> {
+  async openWrite(path: string, _size?: number, opts?: { resume?: boolean }): Promise<WriteHandle> {
     try {
-      const handle = await this.client.open(path, SSH_FXF_WRITE | SSH_FXF_CREAT | SSH_FXF_TRUNC);
       const client = this.client;
-      let offset = 0;
+      let startOffset = 0;
+      let pflags = SSH_FXF_WRITE | SSH_FXF_CREAT | SSH_FXF_TRUNC;
+
+      if (opts?.resume) {
+        try {
+          const attrs = await client.stat(path);
+          startOffset = attrs.size ?? 0;
+        } catch (e) {
+          if (e instanceof SftpError && e.code === SSH_FX_NO_SUCH_FILE) {
+            startOffset = 0;
+          } else {
+            throw e;
+          }
+        }
+        // Never TRUNC when resuming — that would wipe the partial we're
+        // continuing from.
+        pflags = SSH_FXF_WRITE | SSH_FXF_CREAT;
+      }
+
+      const handle = await client.open(path, pflags);
+      let offset = startOffset;
       return {
-        startOffset: 0,
+        startOffset,
         async write(chunk: Uint8Array): Promise<void> {
           try {
             await client.write(handle, offset, chunk);
