@@ -33,6 +33,13 @@ import { describeError } from '../fs/describeError';
  * reconnect loop to a single extra attempt. */
 const MAX_AUTO_RECONNECT_ATTEMPTS = 1;
 
+/** A connection that stayed up at least this long before dropping is treated as
+ * a genuine long-lived session, so its loss earns a fresh auto-reconnect budget.
+ * A connection that drops sooner is a flap: it keeps the (already-incremented)
+ * budget, so repeated fast drops fall back to the manual connections view after
+ * one auto-retry instead of looping forever. */
+const STABLE_CONNECTION_MS = 30_000;
+
 function errorCode(e: unknown): string | undefined {
   if (e && typeof e === 'object' && 'code' in e) {
     const c = (e as { code: unknown }).code;
@@ -163,6 +170,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // -- a failed auto-reconnect leaves this at its cap and falls back to the
   // manual connections view instead of retrying again.
   const reconnectAttemptsRef = useRef(0);
+  // Wall-clock time of the last successful connect, used to distinguish a
+  // genuine long-lived session that dropped (fresh reconnect budget) from a
+  // rapid flap (keep the budget so it falls back to manual after one retry).
+  const connectedAtRef = useRef(0);
   // Always-current handler for SftpConnection's onClosed callback. Declared as
   // a ref (rather than passed directly) because the connect call that installs
   // the callback happens inside performConnect, which is defined before
@@ -415,6 +426,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
    */
   const performConnect = useCallback(
     (creds: SftpCredentials, retry?: { lostReason: string }) => {
+      // Close any prior live connection before opening a new one, so switching
+      // connections (or reconnecting) never leaves an orphaned host socket open.
+      // On the auto-reconnect path the lost connection already tore itself down,
+      // so this ref is null and there is nothing to close.
+      const prior = remoteConnRef.current;
+      remoteConnRef.current = null;
+      if (prior) void prior.close().catch(() => {});
+
       setRemoteConnecting(true);
       if (!retry) setRemoteError(null);
       diag.info(`Connecting to ${creds.host}:${creds.port} as ${creds.username}`);
@@ -462,7 +481,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setRemoteError(null);
           lastRemoteCredsRef.current = creds;
           setCanReconnect(true);
-          reconnectAttemptsRef.current = 0;
+          connectedAtRef.current = Date.now();
           diag.info(`Connected to ${conn.fs.label}`);
         },
         (e) => {
@@ -504,6 +523,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       diag.error('Connection lost', { detail: reason });
       remoteConnRef.current = null;
       setRemote(null);
+
+      // A connection that stayed up a while before dropping gets a fresh
+      // auto-reconnect budget; a rapid flap keeps its (incremented) budget so it
+      // stops auto-retrying and falls back to the manual view.
+      const uptime = Date.now() - connectedAtRef.current;
+      if (uptime >= STABLE_CONNECTION_MS) reconnectAttemptsRef.current = 0;
 
       const creds = lastRemoteCredsRef.current;
       if (creds && reconnectAttemptsRef.current < MAX_AUTO_RECONNECT_ATTEMPTS) {

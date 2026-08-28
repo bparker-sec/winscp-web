@@ -24,6 +24,7 @@ import {
 /** Records everything written and hands out a scripted queue of raw bytes on receive(). */
 class FakeSocket implements RawSocket {
   sentBytes: Uint8Array[] = [];
+  closeCount = 0;
   private queue: (string | null)[];
   constructor(bytes: Uint8Array) {
     this.queue = [base64Encode(bytes)];
@@ -35,7 +36,9 @@ class FakeSocket implements RawSocket {
   async receive() {
     return this.queue.length ? this.queue.shift()! : null;
   }
-  async close() {}
+  async close() {
+    this.closeCount += 1;
+  }
 }
 
 /** Like FakeSocket, but delays the very first send() with a real (short) timer tick,
@@ -363,7 +366,7 @@ describe('SshClient keepalive scheduling', () => {
     return { msgNum, name, wantReply };
   }
 
-  it('sends a well-formed keepalive@openssh.com GLOBAL_REQUEST every 25s, and stops cleanly on stopKeepalive()', async () => {
+  it('sends a well-formed keepalive@openssh.com GLOBAL_REQUEST every 15s, and stops cleanly on stopKeepalive()', async () => {
     const { client, socket } = newClient([]);
 
     (client as any).startKeepalive();
@@ -371,7 +374,7 @@ describe('SshClient keepalive scheduling', () => {
     // No keepalive before the first interval elapses.
     expect(socket.sentBytes.length).toBe(0);
 
-    await vi.advanceTimersByTimeAsync(25_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     expect(socket.sentBytes.length).toBe(1);
     {
       const { msgNum, name, wantReply } = decodeGlobalRequest(socket.sentBytes[0]);
@@ -380,7 +383,7 @@ describe('SshClient keepalive scheduling', () => {
       expect(wantReply).toBe(true);
     }
 
-    await vi.advanceTimersByTimeAsync(25_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     expect(socket.sentBytes.length).toBe(2);
     {
       const { msgNum, name, wantReply } = decodeGlobalRequest(socket.sentBytes[1]);
@@ -403,7 +406,7 @@ describe('SshClient keepalive scheduling', () => {
     (client as any).startKeepalive();
     (client as any).startKeepalive();
 
-    await vi.advanceTimersByTimeAsync(25_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     // If a second interval had been created, two keepalives would have fired.
     expect(socket.sentBytes.length).toBe(1);
   });
@@ -420,6 +423,20 @@ describe('SshClient onClosed — connection-lost signal', () => {
 
     expect(onClosed).toHaveBeenCalledTimes(1);
     expect(onClosed).toHaveBeenCalledWith('boom');
+  });
+
+  it('teardownChannels closes the underlying stream exactly once (no socket leak on lost connection)', async () => {
+    const socket = new FakeSocket(new Uint8Array(0));
+    const stream = new ByteStream(socket);
+    const client = new SshClient(stream, { host: 'example.com', port: 22 });
+
+    (client as any).teardownChannels(new Error('transport error'));
+    // A second teardown (e.g. keepalive failure racing the read-loop error) must
+    // not double-close the socket.
+    (client as any).teardownChannels(new Error('again'));
+    await Promise.resolve();
+
+    expect(socket.closeCount).toBe(1);
   });
 
   it('does not fire onClosed on an intentional disconnect()', async () => {
@@ -444,7 +461,7 @@ describe('SshClient onClosed — connection-lost signal', () => {
       const client = new SshClient(stream, { host: 'example.com', port: 22, onClosed });
 
       (client as any).startKeepalive();
-      await vi.advanceTimersByTimeAsync(25_000);
+      await vi.advanceTimersByTimeAsync(15_000);
       // Let the rejected send()'s .catch() microtask run.
       await Promise.resolve();
       await Promise.resolve();

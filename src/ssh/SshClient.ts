@@ -134,7 +134,10 @@ export class SshClient {
   // stall the read loop on a receive with no traffic; a periodic global request
   // keeps data flowing and detects a dead peer promptly.
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
-  private static readonly KEEPALIVE_INTERVAL_MS = 25_000;
+  // Kept below the host receive-RPC idle window so the keepalive reply is regular
+  // inbound traffic that resets the idle-timeout counter in sdk/tcp — a healthy
+  // idle connection is never mistaken for a dead one.
+  private static readonly KEEPALIVE_INTERVAL_MS = 15_000;
 
   constructor(stream: ByteStream, opts: SshClientOptions) {
     this.stream = stream;
@@ -443,6 +446,7 @@ export class SshClient {
   }
 
   private teardownChannels(err: Error): void {
+    const alreadyClosed = this.closed;
     this.closed = true;
     this.stopKeepalive();
     const reason = err.message || 'transport closed';
@@ -450,6 +454,12 @@ export class SshClient {
       channel.onClose(reason);
     }
     this.channels.clear();
+    // Release the underlying TCP socket. Without this, a lost connection leaves
+    // the host-side socket open; repeated auto-reconnects then leak sockets until
+    // the host hits its per-app socket limit and refuses further connections.
+    if (!alreadyClosed) {
+      void this.stream.close().catch(() => {});
+    }
     if (!this.notifiedClosed) {
       this.notifiedClosed = true;
       this.onClosed?.(reason);

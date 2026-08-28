@@ -2,6 +2,7 @@
 // (SFTP/SSH) since a browser cannot open sockets directly. All data is base64.
 import { tcp, withTimeout, type TcpSocket } from 'ai-publish-sdk';
 import type { RawSocket } from '../net/ByteStream';
+import { idleTolerantReceive } from '../net/receiveRetry';
 
 export type { TcpSocket };
 
@@ -11,23 +12,21 @@ export interface TcpConnectResult {
   detail?: string;
 }
 
-// A live SSH/FTP connection sits idle between user actions, so a receive must be
-// allowed to wait far longer than the SDK's default (~15s) RPC timeout —
-// otherwise the read loop mistakes idle for a dropped connection and tears the
-// session down. SshClient sends a keepalive every 25s, so real traffic always
-// arrives well within this window; only a genuinely dead peer hits it.
-const RECEIVE_TIMEOUT_MS = 120_000;
+// Per-attempt hang-guard: bounds a single underlying receive that never settles.
+// The host's own receive RPC normally rejects with a "timeout" well before this
+// on an idle window; that idle rejection is tolerated by idleTolerantReceive
+// (retried, not treated as a dropped connection) with a backstop that still
+// detects a genuinely silent peer. See net/receiveRetry.
+const RECEIVE_ATTEMPT_TIMEOUT_MS = 30_000;
 
 /** Open a TCP connection through the host. Returns a RawSocket or a reason. */
 export async function tcpConnect(host: string, port: number): Promise<TcpConnectResult> {
   try {
     const sock = await tcp.connect(host, port);
     if (!sock) return { ok: false, detail: 'TCP is unavailable in this host.' };
-    // Wrap the socket so receives get a long RPC timeout (idle-tolerant); send
-    // and close keep the SDK default.
     const socket: RawSocket = {
       send: (dataBase64: string) => sock.send(dataBase64),
-      receive: () => withTimeout(() => sock.receive(), RECEIVE_TIMEOUT_MS),
+      receive: idleTolerantReceive(() => withTimeout(() => sock.receive(), RECEIVE_ATTEMPT_TIMEOUT_MS)),
       close: () => sock.close(),
     };
     return { ok: true, socket };
