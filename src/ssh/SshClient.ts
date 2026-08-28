@@ -113,6 +113,20 @@ export class SshClient {
   private readonly channels = new Map<number, SshChannel>();
   private nextLocalChannel = 0;
   private readLoopStarted = false;
+  private closed = false;
+
+  // Serializes outgoing packets: encoding assigns the packet sequence number and
+  // advances the cipher IV, and the bytes must reach the wire in that exact
+  // order. Without this, a keepalive firing between two SFTP writes (or two
+  // concurrent operations) could interleave and desync the stream → the server
+  // drops the connection. Each send waits for the previous one to finish.
+  private sendChain: Promise<void> = Promise.resolve();
+
+  // Keepalive: an idle SSH connection over the host TCP proxy would otherwise
+  // stall the read loop on a receive with no traffic; a periodic global request
+  // keeps data flowing and detects a dead peer promptly.
+  private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  private static readonly KEEPALIVE_INTERVAL_MS = 25_000;
 
   constructor(stream: ByteStream, opts: SshClientOptions) {
     this.stream = stream;
@@ -120,8 +134,31 @@ export class SshClient {
     this.port = opts.port;
   }
 
-  private async send(payload: Uint8Array): Promise<void> {
-    await this.stream.write(encodePacket(payload, this.c2sCipher, this.c2sSeq++));
+  private send(payload: Uint8Array): Promise<void> {
+    const run = this.sendChain.then(() =>
+      this.stream.write(encodePacket(payload, this.c2sCipher, this.c2sSeq++)),
+    );
+    // Keep the chain alive even if a write rejects, so ordering survives errors.
+    this.sendChain = run.catch(() => {});
+    return run;
+  }
+
+  private startKeepalive(): void {
+    if (this.keepaliveTimer || this.closed) return;
+    this.keepaliveTimer = setInterval(() => {
+      // want_reply=true so the server answers (REQUEST_SUCCESS/FAILURE), which
+      // the read loop consumes — generating regular inbound traffic.
+      void this.send(
+        new SshWriter().byte(SSH_MSG_GLOBAL_REQUEST).string('keepalive@openssh.com').bool(true).finish(),
+      ).catch(() => {});
+    }, SshClient.KEEPALIVE_INTERVAL_MS);
+  }
+
+  private stopKeepalive(): void {
+    if (this.keepaliveTimer) {
+      clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+    }
   }
 
   private async recv(): Promise<Uint8Array> {
@@ -357,6 +394,7 @@ export class SshClient {
 
     if (!this.readLoopStarted) {
       this.readLoopStarted = true;
+      this.startKeepalive();
       void this.readLoop();
     }
 
@@ -391,6 +429,8 @@ export class SshClient {
   }
 
   private teardownChannels(_err: Error): void {
+    this.closed = true;
+    this.stopKeepalive();
     for (const channel of this.channels.values()) {
       channel.onClose();
     }
@@ -398,6 +438,8 @@ export class SshClient {
   }
 
   async disconnect(): Promise<void> {
+    this.closed = true;
+    this.stopKeepalive();
     try {
       await this.send(
         new SshWriter().byte(SSH_MSG_DISCONNECT).uint32(11 /* SSH_DISCONNECT_BY_APPLICATION */).string('').string('').finish(),
