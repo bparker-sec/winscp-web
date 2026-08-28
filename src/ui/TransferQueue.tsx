@@ -22,7 +22,7 @@ function stateLabel(job: TransferJob): string {
     case 'cancelled':
       return 'cancelled';
     case 'error':
-      return job.error ? `error: ${job.error}` : 'error';
+      return 'error';
     default:
       return job.state;
   }
@@ -35,33 +35,38 @@ function Row({ job }: { job: TransferJob }) {
   const retryable = job.state === 'error' || job.state === 'cancelled';
 
   return (
-    <div className="flex items-center gap-2 py-0.5">
-      <span>{job.direction === 'up' ? '⬆' : '⬇'}</span>
-      <span className="truncate flex-1" title={job.name}>
-        {job.name}
-      </span>
-      <div className="w-24 h-1.5 rounded bg-black/10 dark:bg-white/10 overflow-hidden shrink-0">
-        <div
-          className={`h-full bg-accent ${pct === undefined && (job.state === 'active' || job.state === 'conflict') ? 'animate-pulse w-full' : ''}`}
-          style={pct !== undefined ? { width: `${job.state === 'done' ? 100 : pct}%` } : undefined}
-        />
+    <div className="py-0.5">
+      <div className="flex items-center gap-2">
+        <span>{job.direction === 'up' ? '⬆' : '⬇'}</span>
+        <span className="truncate flex-1" title={job.name}>
+          {job.name}
+        </span>
+        <div className="w-24 h-1.5 rounded bg-black/10 dark:bg-white/10 overflow-hidden shrink-0">
+          <div
+            className={`h-full bg-accent ${pct === undefined && (job.state === 'active' || job.state === 'conflict') ? 'animate-pulse w-full' : ''}`}
+            style={pct !== undefined ? { width: `${job.state === 'done' ? 100 : pct}%` } : undefined}
+          />
+        </div>
+        <span className="text-muted w-16 text-right truncate" title={stateLabel(job)}>
+          {stateLabel(job)}
+        </span>
+        {job.size !== undefined && <span className="text-muted w-16 text-right">{fmtSize(job.size)}</span>}
+        <span className="w-14 text-right">
+          {cancellable && (
+            <button className="text-muted hover:text-danger" onClick={() => cancelJob(job.id)}>
+              Cancel
+            </button>
+          )}
+          {retryable && (
+            <button className="text-muted hover:text-accent" onClick={() => retryJob(job.id)}>
+              Retry
+            </button>
+          )}
+        </span>
       </div>
-      <span className="text-muted w-16 text-right truncate" title={stateLabel(job)}>
-        {stateLabel(job)}
-      </span>
-      {job.size !== undefined && <span className="text-muted w-16 text-right">{fmtSize(job.size)}</span>}
-      <span className="w-14 text-right">
-        {cancellable && (
-          <button className="text-muted hover:text-danger" onClick={() => cancelJob(job.id)}>
-            Cancel
-          </button>
-        )}
-        {retryable && (
-          <button className="text-muted hover:text-accent" onClick={() => retryJob(job.id)}>
-            Retry
-          </button>
-        )}
-      </span>
+      {job.state === 'error' && job.error && (
+        <div className="text-danger text-[11px] break-words pl-5 max-h-16 overflow-auto">{job.error}</div>
+      )}
     </div>
   );
 }

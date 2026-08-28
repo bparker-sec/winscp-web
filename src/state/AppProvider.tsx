@@ -24,6 +24,15 @@ import { Vault, type VaultState } from '../connections/vault';
 import { ConnectionStore, type SavedConnection } from '../connections/store';
 import { parseOpenSshPrivateKey } from '../ssh/privatekey';
 import { TransferQueue, type TransferJob, type ConflictChoice } from '../transfer/queue';
+import { diag } from '../diagnostics/log';
+
+function errorCode(e: unknown): string | undefined {
+  if (e && typeof e === 'object' && 'code' in e) {
+    const c = (e as { code: unknown }).code;
+    if (typeof c === 'string' || typeof c === 'number') return String(c);
+  }
+  return undefined;
+}
 
 export type ConnectDialogPrefill = Partial<
   Pick<SavedConnection, 'id' | 'name' | 'host' | 'port' | 'username' | 'authMethod' | 'alwaysPrompt'>
@@ -93,6 +102,10 @@ interface AppState {
   setLocalSelection: (entries: FsEntry[]) => void;
   remoteSelection: FsEntry[];
   setRemoteSelection: (entries: FsEntry[]) => void;
+  // Settings / diagnostics
+  settingsOpen: boolean;
+  openSettings: () => void;
+  closeSettings: () => void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -267,17 +280,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const connect = useCallback(() => {
     setConnecting(true);
     setConnectError(null);
+    diag.info('Connecting to OneDrive');
     connectOneDrive().then(async (res) => {
       if (res.ok) {
         await refreshUser();
         setSignedIn(true);
         setConnecting(false);
+        diag.info('Connected to OneDrive');
       } else {
         setConnecting(false);
         // 'superseded'/'blocked' are internal coordinator states (e.g. a sign-out
         // raced this connect), not user-facing failures.
         if (res.reason !== 'superseded' && res.reason !== 'blocked') {
           setConnectError(res.detail ?? 'Could not connect to OneDrive.');
+          diag.error('OneDrive connect failed', { code: res.reason, detail: res.detail });
         }
       }
     });
@@ -288,6 +304,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     clearOneDriveSession().then(() => {
       setSignedIn(false);
       setUserName(undefined);
+      diag.info('Disconnected from OneDrive');
     });
   }, []);
 
@@ -297,6 +314,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (accept && prompt && pendingHostRef.current) {
       rememberHost(pendingHostRef.current.host, pendingHostRef.current.port, prompt.fingerprint);
     }
+    if (prompt) {
+      diag.info(
+        `Host key ${prompt.status === 'mismatch' ? 'mismatch' : 'unknown'} for ${prompt.host} ${accept ? 'accepted' : 'rejected'}`,
+        { code: prompt.status },
+      );
+    }
     setHostKeyPrompt(null);
     hostKeyResolverRef.current = null;
     resolver?.(accept);
@@ -305,9 +328,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const remoteConnect = useCallback((creds: SftpCredentials) => {
     setRemoteConnecting(true);
     setRemoteError(null);
+    diag.info(`Connecting to ${creds.host}:${creds.port} as ${creds.username}`);
 
     const trust = (info: { host: string; port: number; fingerprint: string; status: 'new' | 'match' | 'mismatch' }) => {
       if (info.status === 'match') return true;
+      if (info.status === 'new') diag.warn(`New host key for ${info.host}:${info.port}`);
+      if (info.status === 'mismatch') diag.warn(`Host key mismatch for ${info.host}:${info.port}`, { code: 'mismatch' });
       return new Promise<boolean>((resolve) => {
         pendingHostRef.current = { host: info.host, port: info.port };
         hostKeyResolverRef.current = resolve;
@@ -321,6 +347,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       settled = true;
       setRemoteConnecting(false);
       setRemoteError('Connection timed out after 30s.');
+      diag.error('SFTP connect failed', { code: 'timeout', detail: 'Connection timed out after 30s.' });
       setHostKeyPrompt(null);
       hostKeyResolverRef.current = null;
     }, 30000);
@@ -339,13 +366,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setRemoteHome(conn.home);
         setRemoteConnecting(false);
         setConnectDialogOpen(false);
+        diag.info(`Connected to ${conn.fs.label}`);
       },
       (e) => {
         window.clearTimeout(timer);
         if (settled) return;
         settled = true;
         setRemoteConnecting(false);
-        setRemoteError(e instanceof Error ? e.message : String(e));
+        const message = e instanceof Error ? e.message : String(e);
+        setRemoteError(message);
+        diag.error('SFTP connect failed', { code: errorCode(e), detail: message });
         setHostKeyPrompt(null);
         hostKeyResolverRef.current = null;
       },
@@ -437,6 +467,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  // Track which terminal job ids we've already logged to diagnostics, so a
+  // job that emits multiple snapshots in the same terminal state (e.g. a
+  // progress tick right before 'done') isn't logged more than once.
+  const loggedJobIdsRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     return queue.subscribe((snapshot) => {
       setJobs(snapshot);
@@ -447,6 +482,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // is cheap hygiene against a stray future bug).
         appliedChoiceRef.current = null;
         conflictQueueRef.current = [];
+      }
+      for (const job of snapshot) {
+        if (job.state === 'queued' || job.state === 'active') {
+          // A retried job cycles back through these states — allow it to be
+          // logged again if it reaches a terminal state a second time.
+          loggedJobIdsRef.current.delete(job.id);
+          continue;
+        }
+        if (loggedJobIdsRef.current.has(job.id)) continue;
+        if (job.state === 'error') {
+          diag.error(`Transfer failed: ${job.name}`, { detail: job.error });
+          loggedJobIdsRef.current.add(job.id);
+        } else if (job.state === 'done') {
+          diag.info(`Transferred ${job.name}`);
+          loggedJobIdsRef.current.add(job.id);
+        }
       }
     });
   }, [queue]);
@@ -492,6 +543,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const cancelAllJobs = useCallback(() => queue.cancelAll(), [queue]);
   const retryJob = useCallback((id: string) => queue.retry(id), [queue]);
   const clearFinished = useCallback(() => queue.clearFinished(), [queue]);
+
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const openSettings = useCallback(() => setSettingsOpen(true), []);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
   const [localCwd, setLocalCwd] = useState('/');
   const [remoteCwd, setRemoteCwd] = useState(remoteHome);
@@ -556,6 +611,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLocalSelection,
     remoteSelection,
     setRemoteSelection,
+    settingsOpen,
+    openSettings,
+    closeSettings,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

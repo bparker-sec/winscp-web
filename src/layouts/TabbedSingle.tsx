@@ -12,6 +12,7 @@ import { HostKeyPrompt } from '../ui/HostKeyPrompt';
 import { ConnectionManager } from '../ui/ConnectionManager';
 import { MasterPassphraseDialog } from '../ui/MasterPassphraseDialog';
 import { ConflictDialog } from '../ui/ConflictDialog';
+import { SettingsDialog } from '../ui/SettingsDialog';
 
 export function TabbedSingle() {
   const {
@@ -30,6 +31,7 @@ export function TabbedSingle() {
     connectionManagerOpen,
     passphraseDialog,
     conflictPrompt,
+    settingsOpen,
     localCwd,
     remoteCwd,
     setLocalCwd,
@@ -106,6 +108,7 @@ export function TabbedSingle() {
       {connectionManagerOpen && <ConnectionManager />}
       {passphraseDialog && <MasterPassphraseDialog />}
       {conflictPrompt && <ConflictDialog />}
+      {settingsOpen && <SettingsDialog />}
     </div>
   );
 }

@@ -24,6 +24,16 @@ function baseState(overrides: Partial<ReturnType<typeof useApp>> = {}) {
     hostKeyPrompt: null,
     openConnectDialog: vi.fn(),
     closeConnectDialog: vi.fn(),
+    connections: [],
+    vaultState: 'unlocked' as const,
+    connectionManagerOpen: false,
+    passphraseDialog: null,
+    openConnectionManager: vi.fn(),
+    closeConnectionManager: vi.fn(),
+    connectSaved: vi.fn(),
+    settingsOpen: false,
+    openSettings: vi.fn(),
+    closeSettings: vi.fn(),
     remoteConnect: vi.fn(),
     remoteDisconnect: vi.fn(),
     resolveHostKey: vi.fn(),
@@ -77,7 +87,7 @@ describe('Commander remote pane wiring', () => {
   it('shows RemoteConnectHint when remote is null', () => {
     mockUseApp.mockReturnValue(baseState());
     render(<Commander />);
-    expect(screen.getByText(/connect to an sftp/i)).toBeTruthy();
+    expect(screen.getByText(/no saved connections/i)).toBeTruthy();
     expect(screen.queryByText(/^name$/i)).toBeNull();
   });
 

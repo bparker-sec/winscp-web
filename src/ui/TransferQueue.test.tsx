@@ -73,4 +73,17 @@ describe('TransferQueue', () => {
     fireEvent.click(screen.getByRole('button', { name: /retry/i }));
     expect(retryJob).toHaveBeenCalledWith('j1');
   });
+
+  it('shows the full error message inline for an errored job, not just in a title attribute', () => {
+    const longError = 'SftpError: permission denied writing to /remote/protected/file.txt (code 3)';
+    mockUseApp.mockReturnValue({
+      jobs: [job({ state: 'error', error: longError })],
+      cancelJob: vi.fn(),
+      cancelAllJobs: vi.fn(),
+      retryJob: vi.fn(),
+      clearFinished: vi.fn(),
+    });
+    render(<TransferQueue />);
+    expect(screen.getByText(longError)).toBeTruthy();
+  });
 });

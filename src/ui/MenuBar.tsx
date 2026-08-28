@@ -1,4 +1,4 @@
-import { IconMoon, IconSun } from './icons';
+import { IconMoon, IconSun, IconGear } from './icons';
 import type { ThemeApi } from '../theme/useTheme';
 import { AccountButton } from './AccountButton';
 import { useApp } from '../state/AppProvider';
@@ -24,7 +24,7 @@ export function MenuBar({
   onConnect,
   onDisconnect,
 }: Props) {
-  const { openConnectionManager } = useApp();
+  const { openConnectionManager, openSettings } = useApp();
   return (
     <div className="flex items-center gap-3 px-3 h-9 bg-surface border-b border-border select-none">
       <span className="font-semibold">WinSCP Web</span>
@@ -42,7 +42,14 @@ export function MenuBar({
           title="Saved connections"
           onClick={openConnectionManager}
         >
-          Saved…
+          Connections
+        </button>
+        <button
+          className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 text-text"
+          title="Settings"
+          onClick={openSettings}
+        >
+          <IconGear />
         </button>
         <button
           className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 text-text"
