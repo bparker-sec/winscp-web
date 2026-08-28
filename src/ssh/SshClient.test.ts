@@ -1,7 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ByteStream, type RawSocket } from '../net/ByteStream';
 import { base64Encode } from '../net/base64';
-import { SshWriter } from './wire';
+import { SshWriter, SshReader } from './wire';
 import { NoneCipher, GcmCipher, encodePacket } from './packet';
 import { SshChannel } from './channel';
 import { SshClient, SshDisconnectError } from './SshClient';
@@ -38,6 +38,19 @@ class FakeSocket implements RawSocket {
   async close() {}
 }
 
+/** Like FakeSocket, but delays the very first send() with a real (short) timer tick,
+ * so later sends physically complete their I/O before the first one does if nothing
+ * serializes them. Used to prove the send mutex holds wire order regardless of
+ * per-write completion timing. */
+class DelayedFakeSocket extends FakeSocket {
+  async send(dataBase64: string) {
+    if (this.sentBytes.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    return super.send(dataBase64);
+  }
+}
+
 function concatAll(chunks: Uint8Array[]): Uint8Array {
   const total = chunks.reduce((n, c) => n + c.length, 0);
   const out = new Uint8Array(total);
@@ -55,6 +68,11 @@ function newClient(scriptedPackets: Uint8Array[]): { client: SshClient; socket: 
   const stream = new ByteStream(socket);
   const client = new SshClient(stream, { host: 'example.com', port: 22 });
   return { client, socket };
+}
+
+function newClientWithSocket(socket: FakeSocket): SshClient {
+  const stream = new ByteStream(socket);
+  return new SshClient(stream, { host: 'example.com', port: 22 });
 }
 
 function globalRequestPacket(wantReply: boolean): Uint8Array {
@@ -275,6 +293,119 @@ describe('SshClient.openSubsystem — single subsystem per client', () => {
     await expect(client.openSubsystem('sftp')).rejects.toThrow(
       /single subsystem\/channel per connection/,
     );
+  });
+});
+
+describe('SshClient.send — mutex serializes concurrent sends', () => {
+  it('writes reach the wire in issue order with strictly increasing seq/IV, even when the first write is slow', async () => {
+    const socket = new DelayedFakeSocket(new Uint8Array(0));
+    const client = newClientWithSocket(socket);
+
+    // Install a GCM cipher (mirrors what connect() does post-NEWKEYS). Each
+    // encodePacket() call advances this cipher's IV as a side effect, so
+    // decrypting the wire bytes in a given order only succeeds (AEAD tag
+    // verifies) if that's the order encodePacket was actually invoked in —
+    // this is a strong, order-sensitive proof, not just a length check.
+    const key = new Uint8Array(32).fill(7);
+    const iv = new Uint8Array(12);
+    iv.set([9, 9, 9, 9], 0);
+    (client as any).c2sCipher = new GcmCipher(key, iv.slice());
+
+    const N = 6;
+    const payloads = Array.from({ length: N }, (_, i) => new SshWriter().byte(50).uint32(i).finish());
+
+    // Fire all sends without awaiting each in turn — this is the concurrency
+    // the mutex must serialize. The first physical write is artificially
+    // delayed (DelayedFakeSocket), so without the mutex a later send could
+    // reach the wire (or assign its seq/advance the IV) before the first.
+    const results = payloads.map((p) => (client as any).send(p));
+    await Promise.all(results);
+
+    expect(socket.sentBytes.length).toBe(N);
+    expect((client as any).c2sSeq).toBe(N);
+
+    // Decrypt each wire entry in write order with a matching decoder cipher
+    // seeded at the same starting IV. If any two sends had interleaved
+    // (raced past each other), the IV sequence used to seal packet k would
+    // not match decoder's expected IV for position k, and gcmOpen would
+    // throw an authentication failure instead of yielding index === k.
+    const decodeIv = new Uint8Array(12);
+    decodeIv.set([9, 9, 9, 9], 0);
+    const decoder = new GcmCipher(key, decodeIv);
+    for (let i = 0; i < N; i++) {
+      const wire = socket.sentBytes[i];
+      const lengthBytes = wire.subarray(0, 4);
+      const ciphertextAndTag = wire.subarray(4);
+      const plaintext = decoder.open(lengthBytes, ciphertextAndTag);
+      const paddingLength = plaintext[0];
+      const payload = plaintext.subarray(1, plaintext.length - paddingLength);
+      const r = new SshReader(payload);
+      expect(r.byte()).toBe(50);
+      expect(r.uint32()).toBe(i);
+    }
+  });
+});
+
+describe('SshClient keepalive scheduling', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function decodeGlobalRequest(wire: Uint8Array): { msgNum: number; name: string; wantReply: boolean } {
+    const payload = decodeNoneCipherPacket(wire);
+    const r = new SshReader(payload);
+    const msgNum = r.byte();
+    const name = new TextDecoder().decode(r.string());
+    const wantReply = r.bool();
+    return { msgNum, name, wantReply };
+  }
+
+  it('sends a well-formed keepalive@openssh.com GLOBAL_REQUEST every 25s, and stops cleanly on stopKeepalive()', async () => {
+    const { client, socket } = newClient([]);
+
+    (client as any).startKeepalive();
+
+    // No keepalive before the first interval elapses.
+    expect(socket.sentBytes.length).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(socket.sentBytes.length).toBe(1);
+    {
+      const { msgNum, name, wantReply } = decodeGlobalRequest(socket.sentBytes[0]);
+      expect(msgNum).toBe(SSH_MSG_GLOBAL_REQUEST);
+      expect(name).toBe('keepalive@openssh.com');
+      expect(wantReply).toBe(true);
+    }
+
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(socket.sentBytes.length).toBe(2);
+    {
+      const { msgNum, name, wantReply } = decodeGlobalRequest(socket.sentBytes[1]);
+      expect(msgNum).toBe(SSH_MSG_GLOBAL_REQUEST);
+      expect(name).toBe('keepalive@openssh.com');
+      expect(wantReply).toBe(true);
+    }
+
+    (client as any).stopKeepalive();
+    expect((client as any).keepaliveTimer).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    // No further sends: the interval was cleared, not just missed a tick.
+    expect(socket.sentBytes.length).toBe(2);
+  });
+
+  it('startKeepalive() is idempotent: calling it again does not create a second interval', async () => {
+    const { client, socket } = newClient([]);
+
+    (client as any).startKeepalive();
+    (client as any).startKeepalive();
+
+    await vi.advanceTimersByTimeAsync(25_000);
+    // If a second interval had been created, two keepalives would have fired.
+    expect(socket.sentBytes.length).toBe(1);
   });
 });
 
