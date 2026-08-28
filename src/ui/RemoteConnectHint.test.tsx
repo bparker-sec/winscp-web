@@ -95,4 +95,18 @@ describe('RemoteConnectHint', () => {
     render(<RemoteConnectHint />);
     expect(screen.getByRole('alert').textContent).toMatch(/boom/i);
   });
+
+  it('shows a Reconnect button that calls reconnectLast when canReconnect is true', () => {
+    const reconnectLast = vi.fn();
+    setup({ remoteError: 'Connection lost: closed. Select a connection to reconnect.', canReconnect: true, reconnectLast });
+    render(<RemoteConnectHint />);
+    fireEvent.click(screen.getByRole('button', { name: /reconnect/i }));
+    expect(reconnectLast).toHaveBeenCalled();
+  });
+
+  it('does not show a Reconnect button when canReconnect is false', () => {
+    setup({ remoteError: 'boom', canReconnect: false });
+    render(<RemoteConnectHint />);
+    expect(screen.queryByRole('button', { name: /reconnect/i })).toBeNull();
+  });
 });

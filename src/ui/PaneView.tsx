@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FileSystem, FsEntry } from '../fs/FileSystem';
-import { FsError, joinPath, parentPath } from '../fs/FileSystem';
+import { joinPath, parentPath } from '../fs/FileSystem';
+import { describeError } from '../fs/describeError';
 import { IconFolder, IconFile, IconUp, IconDown, IconRefresh, IconNewFolder, IconTrash } from './icons';
 import { PromptModal } from './PromptModal';
 
@@ -74,14 +75,11 @@ export function PaneView({
     setError(null);
     fs.list(cwd)
       .then((e) => alive && setEntries(e))
-      .catch((err) => alive && setError(String(err?.message ?? err)));
+      .catch((err) => alive && setError(describeError(err)));
     return () => {
       alive = false;
     };
   }, [fs, cwd, refreshKey]);
-
-  const describeError = (e: unknown): string =>
-    e instanceof FsError ? `${e.code}: ${e.message}` : String((e as Error)?.message ?? e);
 
   const runAction = async (fn: () => Promise<void>) => {
     try {
@@ -315,8 +313,10 @@ export function PaneView({
           <div
             key={e.path}
             draggable
-            className={`grid grid-cols-[1fr_80px_130px] px-2 py-0.5 cursor-default ${
-              selected.has(e.path) ? 'bg-accent/20' : 'hover:bg-accent/10'
+            className={`grid grid-cols-[1fr_80px_130px] px-2 py-0.5 cursor-default border-l-2 ${
+              selected.has(e.path)
+                ? 'selected bg-accent/30 border-accent text-fg font-medium'
+                : 'border-transparent hover:bg-accent/10'
             }`}
             onClick={(evt) => selectRow(e, evt)}
             onDoubleClick={() => e.kind === 'dir' && setCwd(e.path)}

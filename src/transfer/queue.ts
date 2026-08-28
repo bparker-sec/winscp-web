@@ -1,5 +1,6 @@
 import { FsError, joinPath, parentPath, type FileSystem } from '../fs/FileSystem';
 import { transferFile, transferTree, TransferCancelled } from './engine';
+import { describeError } from '../fs/describeError';
 
 export type JobState = 'queued' | 'active' | 'conflict' | 'done' | 'skipped' | 'error' | 'cancelled';
 export type Direction = 'up' | 'down';
@@ -254,7 +255,7 @@ export class TransferQueue {
         job.state = 'cancelled';
       } else {
         job.state = 'error';
-        job.error = err instanceof Error ? err.message : String(err);
+        job.error = describeError(err);
       }
       this.emit(true);
     } finally {

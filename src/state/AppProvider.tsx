@@ -26,6 +26,12 @@ import { parseOpenSshPrivateKey } from '../ssh/privatekey';
 import { TransferQueue, type TransferJob, type ConflictChoice } from '../transfer/queue';
 import { diag } from '../diagnostics/log';
 import { getSettings, setSettings } from '../settings/appSettings';
+import { describeError } from '../fs/describeError';
+
+/** A connection is auto-retried at most once after an unexpected close before
+ * falling back to the manual connections view -- this bounds any possible
+ * reconnect loop to a single extra attempt. */
+const MAX_AUTO_RECONNECT_ATTEMPTS = 1;
 
 function errorCode(e: unknown): string | undefined {
   if (e && typeof e === 'object' && 'code' in e) {
@@ -63,6 +69,10 @@ interface AppState {
   closeConnectDialog: () => void;
   remoteConnect: (creds: SftpCredentials) => void;
   remoteDisconnect: () => void;
+  /** Reconnect using the last successfully-connected credentials (session-only). */
+  reconnectLast: () => void;
+  /** True when there are retained credentials `reconnectLast` can use. */
+  canReconnect: boolean;
   resolveHostKey: (accept: boolean) => void;
   connecting: boolean;
   connectError: string | null;
@@ -136,6 +146,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const remoteConnRef = useRef<SftpConnection | null>(null);
   const hostKeyResolverRef = useRef<((accept: boolean) => void) | null>(null);
   const pendingHostRef = useRef<{ host: string; port: number } | null>(null);
+  // The last credentials that produced a SUCCESSFUL connect, kept only for the
+  // lifetime of this session/unlocked-vault (never persisted). Used to drive
+  // auto-reconnect after an unexpected connection loss, and the manual
+  // "Reconnect" affordance. Cleared on an intentional disconnect.
+  const lastRemoteCredsRef = useRef<SftpCredentials | null>(null);
+  const [canReconnect, setCanReconnect] = useState(false);
+  // Counts automatic (non-user-initiated) reconnect attempts since the last
+  // fully successful connect. Bounded by MAX_AUTO_RECONNECT_ATTEMPTS so a
+  // server that keeps dropping the connection can't trigger an infinite loop
+  // -- a failed auto-reconnect leaves this at its cap and falls back to the
+  // manual connections view instead of retrying again.
+  const reconnectAttemptsRef = useRef(0);
+  // Always-current handler for SftpConnection's onClosed callback. Declared as
+  // a ref (rather than passed directly) because the connect call that installs
+  // the callback happens inside performConnect, which is defined before
+  // handleConnectionLost (which itself calls back into performConnect).
+  const handleConnectionLostRef = useRef<(reason: string) => void>(() => {});
 
   // Vault + connection store
   const vault = useMemo(() => new Vault(), []);
@@ -374,62 +401,128 @@ export function AppProvider({ children }: { children: ReactNode }) {
     resolver?.(accept);
   }, [hostKeyPrompt]);
 
-  const remoteConnect = useCallback((creds: SftpCredentials) => {
-    setRemoteConnecting(true);
-    setRemoteError(null);
-    diag.info(`Connecting to ${creds.host}:${creds.port} as ${creds.username}`);
+  /**
+   * Core connect routine shared by a fresh user-initiated `remoteConnect` and
+   * the automatic reconnect triggered by `handleConnectionLost`. `retry`
+   * carries context for an auto-reconnect attempt: when set, a failure here
+   * is reported as a continuation of the original connection loss (not a
+   * fresh connect error), and no further automatic retry is scheduled.
+   */
+  const performConnect = useCallback(
+    (creds: SftpCredentials, retry?: { lostReason: string }) => {
+      setRemoteConnecting(true);
+      if (!retry) setRemoteError(null);
+      diag.info(`Connecting to ${creds.host}:${creds.port} as ${creds.username}`);
 
-    const trust = (info: { host: string; port: number; fingerprint: string; status: 'new' | 'match' | 'mismatch' }) => {
-      if (info.status === 'match') return true;
-      if (info.status === 'new') diag.warn(`New host key for ${info.host}:${info.port}`);
-      if (info.status === 'mismatch') diag.warn(`Host key mismatch for ${info.host}:${info.port}`, { code: 'mismatch' });
-      return new Promise<boolean>((resolve) => {
-        pendingHostRef.current = { host: info.host, port: info.port };
-        hostKeyResolverRef.current = resolve;
-        setHostKeyPrompt({ host: `${info.host}:${info.port}`, fingerprint: info.fingerprint, status: info.status });
-      });
-    };
+      const trust = (info: { host: string; port: number; fingerprint: string; status: 'new' | 'match' | 'mismatch' }) => {
+        // A remembered host key (status 'match') auto-accepts with no prompt —
+        // this is what lets auto-reconnect proceed silently.
+        if (info.status === 'match') return true;
+        if (info.status === 'new') diag.warn(`New host key for ${info.host}:${info.port}`);
+        if (info.status === 'mismatch') diag.warn(`Host key mismatch for ${info.host}:${info.port}`, { code: 'mismatch' });
+        return new Promise<boolean>((resolve) => {
+          pendingHostRef.current = { host: info.host, port: info.port };
+          hostKeyResolverRef.current = resolve;
+          setHostKeyPrompt({ host: `${info.host}:${info.port}`, fingerprint: info.fingerprint, status: info.status });
+        });
+      };
 
-    let settled = false;
-    const timer = window.setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      setRemoteConnecting(false);
-      setRemoteError('Connection timed out after 30s.');
-      diag.error('SFTP connect failed', { code: 'timeout', detail: 'Connection timed out after 30s.' });
-      setHostKeyPrompt(null);
-      hostKeyResolverRef.current = null;
-    }, 30000);
-
-    connectSftp(creds, trust, `${creds.username}@${creds.host}`).then(
-      (conn) => {
-        window.clearTimeout(timer);
-        if (settled) {
-          // We already timed out/failed — don't leak this late-arriving session.
-          void conn.close().catch(() => {});
-          return;
-        }
-        settled = true;
-        remoteConnRef.current = conn;
-        setRemote(conn.fs);
-        setRemoteHome(conn.home);
-        setRemoteConnecting(false);
-        setConnectDialogOpen(false);
-        diag.info(`Connected to ${conn.fs.label}`);
-      },
-      (e) => {
-        window.clearTimeout(timer);
+      let settled = false;
+      const timer = window.setTimeout(() => {
         if (settled) return;
         settled = true;
         setRemoteConnecting(false);
-        const message = e instanceof Error ? e.message : String(e);
-        setRemoteError(message);
-        diag.error('SFTP connect failed', { code: errorCode(e), detail: message });
+        setRemoteError('Connection timed out after 30s.');
+        diag.error('SFTP connect failed', { code: 'timeout', detail: 'Connection timed out after 30s.' });
         setHostKeyPrompt(null);
         hostKeyResolverRef.current = null;
-      },
-    );
-  }, []);
+      }, 30000);
+
+      connectSftp(creds, trust, `${creds.username}@${creds.host}`, {
+        onClosed: (reason) => handleConnectionLostRef.current(reason),
+      }).then(
+        (conn) => {
+          window.clearTimeout(timer);
+          if (settled) {
+            // We already timed out/failed — don't leak this late-arriving session.
+            void conn.close().catch(() => {});
+            return;
+          }
+          settled = true;
+          remoteConnRef.current = conn;
+          setRemote(conn.fs);
+          setRemoteHome(conn.home);
+          setRemoteConnecting(false);
+          setConnectDialogOpen(false);
+          setRemoteError(null);
+          lastRemoteCredsRef.current = creds;
+          setCanReconnect(true);
+          reconnectAttemptsRef.current = 0;
+          diag.info(`Connected to ${conn.fs.label}`);
+        },
+        (e) => {
+          window.clearTimeout(timer);
+          if (settled) return;
+          settled = true;
+          setRemoteConnecting(false);
+          const detail = describeError(e);
+          diag.error('SFTP connect failed', { code: errorCode(e), detail });
+          if (retry) {
+            // The auto-reconnect attempt itself failed. Auto-retries are
+            // already exhausted (the counter was incremented before this
+            // attempt started) — fall back to the manual connections view
+            // instead of scheduling another automatic try.
+            setRemoteError(`Connection lost: ${retry.lostReason}. Select a connection to reconnect.`);
+          } else {
+            setRemoteError(detail);
+          }
+          setHostKeyPrompt(null);
+          hostKeyResolverRef.current = null;
+        },
+      );
+    },
+    [],
+  );
+
+  const remoteConnect = useCallback(
+    (creds: SftpCredentials) => {
+      // A fresh, user-initiated connect always starts the auto-reconnect
+      // budget over.
+      reconnectAttemptsRef.current = 0;
+      performConnect(creds);
+    },
+    [performConnect],
+  );
+
+  const handleConnectionLost = useCallback(
+    (reason: string) => {
+      diag.error('Connection lost', { detail: reason });
+      remoteConnRef.current = null;
+      setRemote(null);
+
+      const creds = lastRemoteCredsRef.current;
+      if (creds && reconnectAttemptsRef.current < MAX_AUTO_RECONNECT_ATTEMPTS) {
+        reconnectAttemptsRef.current += 1;
+        setRemoteError('Connection lost — reconnecting…');
+        // The remembered host key makes the trust callback auto-accept
+        // ('match') below, so this proceeds without a host-key prompt.
+        performConnect(creds, { lostReason: reason });
+      } else {
+        setRemoteError(`Connection lost: ${reason}. Select a connection to reconnect.`);
+      }
+    },
+    [performConnect],
+  );
+
+  useEffect(() => {
+    handleConnectionLostRef.current = handleConnectionLost;
+  }, [handleConnectionLost]);
+
+  const reconnectLast = useCallback(() => {
+    if (lastRemoteCredsRef.current) {
+      remoteConnect(lastRemoteCredsRef.current);
+    }
+  }, [remoteConnect]);
 
   const connectSaved = useCallback(
     async (id: string) => {
@@ -489,6 +582,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setRemote(null);
     setRemoteHome('/');
     setRemoteError(null);
+    // Intentional disconnect: forget the retained credentials so an
+    // unexpected close afterwards (there shouldn't be one — the connection is
+    // already torn down) never auto-reconnects, and the Reconnect affordance
+    // disappears.
+    lastRemoteCredsRef.current = null;
+    setCanReconnect(false);
+    reconnectAttemptsRef.current = 0;
   }, []);
 
   // Transfers
@@ -623,6 +723,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     closeConnectDialog,
     remoteConnect,
     remoteDisconnect,
+    reconnectLast,
+    canReconnect,
     resolveHostKey,
     connecting,
     connectError,

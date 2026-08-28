@@ -1,7 +1,16 @@
 import { useApp } from '../state/AppProvider';
 
 export function RemoteConnectHint() {
-  const { connections, vaultState, connectSaved, openConnectDialog, openConnectionManager, remoteError } = useApp();
+  const {
+    connections,
+    vaultState,
+    connectSaved,
+    openConnectDialog,
+    openConnectionManager,
+    remoteError,
+    canReconnect,
+    reconnectLast,
+  } = useApp();
 
   const onConnect = (id: string) => {
     // connectSaved reports failures via remoteError; swallow the rejection
@@ -56,8 +65,16 @@ export function RemoteConnectHint() {
       )}
 
       {remoteError && (
-        <div role="alert" className="text-danger text-[12px] max-w-xs mx-auto text-center">
-          {remoteError}
+        <div role="alert" className="text-danger text-[12px] max-w-xs mx-auto text-center flex flex-col items-center gap-2">
+          <span>{remoteError}</span>
+          {canReconnect && (
+            <button
+              className="h-7 px-3 rounded bg-accent text-accent-fg text-[12px]"
+              onClick={reconnectLast}
+            >
+              Reconnect
+            </button>
+          )}
         </div>
       )}
     </div>

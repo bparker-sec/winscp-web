@@ -222,6 +222,103 @@ describe('AppProvider remote connection state machine', () => {
   });
 });
 
+describe('AppProvider auto-reconnect on connection loss', () => {
+  beforeEach(() => {
+    mockConnectSftp.mockReset();
+    mockRememberHost.mockReset();
+  });
+
+  it('auto-reconnects once (no host-key prompt) after an unexpected close, then resets the retry budget', async () => {
+    const fakeFs = { label: 'bob@example.com' };
+    const close = vi.fn(async () => {});
+    let onClosed: ((reason: string) => void) | undefined;
+
+    mockConnectSftp.mockImplementation(async (_creds, _trust, _label, opts) => {
+      onClosed = opts?.onClosed;
+      return { fs: fakeFs, fingerprint: 'SHA256:x', home: '/home/u', close };
+    });
+
+    const { result } = setupHook();
+
+    act(() => {
+      result.current.remoteConnect(creds);
+    });
+    await waitFor(() => expect(result.current.remote).toBe(fakeFs));
+    expect(result.current.canReconnect).toBe(true);
+
+    // Simulate the transport dropping the connection.
+    act(() => {
+      onClosed?.('socket closed');
+    });
+
+    expect(result.current.remote).toBeNull();
+    expect(result.current.remoteError).toMatch(/reconnecting/i);
+
+    // The auto-reconnect call must not prompt for the host key (it reuses
+    // connectSftp, which auto-accepts a 'match' host key with no prompt).
+    await waitFor(() => expect(result.current.remote).toBe(fakeFs));
+    expect(result.current.hostKeyPrompt).toBeNull();
+    expect(mockConnectSftp).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls back to the connections view without looping after the auto-retry also fails', async () => {
+    const fakeFs = { label: 'bob@example.com' };
+    const close = vi.fn(async () => {});
+    let onClosed: ((reason: string) => void) | undefined;
+    let calls = 0;
+
+    mockConnectSftp.mockImplementation(async (_creds, _trust, _label, opts) => {
+      calls++;
+      if (calls === 1) {
+        onClosed = opts?.onClosed;
+        return { fs: fakeFs, fingerprint: 'SHA256:x', home: '/home/u', close };
+      }
+      throw new Error('connection refused');
+    });
+
+    const { result } = setupHook();
+
+    act(() => {
+      result.current.remoteConnect(creds);
+    });
+    await waitFor(() => expect(result.current.remote).toBe(fakeFs));
+
+    act(() => {
+      onClosed?.('socket closed');
+    });
+
+    await waitFor(() => {
+      expect(result.current.remoteError).toMatch(/connection lost/i);
+      expect(result.current.remoteError).toMatch(/select a connection/i);
+    });
+    expect(result.current.remote).toBeNull();
+    // Exactly one auto-retry was attempted (initial connect + one retry), no loop.
+    expect(mockConnectSftp).toHaveBeenCalledTimes(2);
+    // Retained creds are still available for a manual Reconnect click.
+    expect(result.current.canReconnect).toBe(true);
+  });
+
+  it('an intentional disconnect clears retained creds so a later close does not auto-reconnect', async () => {
+    const fakeFs = { label: 'bob@example.com' };
+    const close = vi.fn(async () => {});
+    mockConnectSftp.mockResolvedValue({ fs: fakeFs, fingerprint: 'SHA256:x', home: '/home/u', close });
+
+    const { result } = setupHook();
+
+    act(() => {
+      result.current.remoteConnect(creds);
+    });
+    await waitFor(() => expect(result.current.remote).toBe(fakeFs));
+
+    act(() => {
+      result.current.remoteDisconnect();
+    });
+
+    expect(result.current.canReconnect).toBe(false);
+    expect(result.current.remoteError).toBeNull();
+  });
+});
+
 describe('AppProvider conflict-resolver wiring', () => {
   beforeEach(() => {
     mockConnectSftp.mockReset();

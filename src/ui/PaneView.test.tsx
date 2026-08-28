@@ -37,6 +37,10 @@ describe('PaneView multi-select', () => {
       const lastCall = onSelectionChange.mock.calls.at(-1);
       expect(lastCall?.[0]).toHaveLength(2);
     });
+
+    // Both selected rows must carry the visible "selected" highlight class.
+    expect(screen.getByText('a.txt').closest('div')?.className).toMatch(/\bselected\b/);
+    expect(screen.getByText('b.txt').closest('div')?.className).toMatch(/\bselected\b/);
   });
 });
 
