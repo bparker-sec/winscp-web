@@ -391,6 +391,41 @@ describe('TransferQueue', () => {
     expect(seenStates).toContain('queued');
     expect(seenStates).toContain('done');
   });
+
+  it('isolates a throwing subscriber from the queue and from other listeners', async () => {
+    const src = new MockFS('src');
+    const dst = new MockFS('dst');
+    await writeFile(src, '/iso.txt', 'isolation test');
+
+    const queue = new TransferQueue();
+    queue.subscribe(() => {
+      throw new Error('boom: a misbehaving subscriber');
+    });
+    const goodSnapshots: TransferJob[][] = [];
+    queue.subscribe((jobs) => {
+      goodSnapshots.push(jobs);
+    });
+
+    const id = queue.enqueue({
+      name: 'iso.txt',
+      direction: 'up',
+      src,
+      srcPath: '/iso.txt',
+      dst,
+      dstPath: '/iso.txt',
+      size: 14,
+      isDir: false,
+    });
+
+    const job = await waitForState(queue, id, TERMINAL);
+    expect(job.state).toBe('done');
+
+    expect(goodSnapshots.length).toBeGreaterThan(0);
+    const sawDone = goodSnapshots.some((snap) =>
+      snap.some((j) => j.id === id && j.state === 'done'),
+    );
+    expect(sawDone).toBe(true);
+  });
 });
 
 describe('uniqueName', () => {

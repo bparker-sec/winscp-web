@@ -237,6 +237,12 @@ export class TransferQueue {
     if (!immediate && now - this.lastProgressEmit < PROGRESS_THROTTLE_MS) return;
     this.lastProgressEmit = now;
     const snapshot = this.jobs();
-    for (const fn of this.listeners) fn(snapshot);
+    for (const fn of this.listeners) {
+      try {
+        fn(snapshot);
+      } catch {
+        // A misbehaving subscriber must not break the queue or other listeners.
+      }
+    }
   }
 }
