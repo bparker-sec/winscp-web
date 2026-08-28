@@ -15,12 +15,15 @@ export function ConnectionManager() {
   } = useApp();
 
   const onConnect = (id: string) => {
-    connectSaved(id);
+    // connectSaved reports failures via remoteError; swallow the rejection
+    // here so it doesn't surface as an unhandled promise rejection.
+    void connectSaved(id).catch(() => {});
     closeConnectionManager();
   };
 
   const onEdit = (conn: SavedConnection) => {
     openConnectDialogPrefilled({
+      id: conn.id,
       name: conn.name,
       host: conn.host,
       port: conn.port,

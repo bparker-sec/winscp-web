@@ -156,4 +156,31 @@ describe('ConnectDialog', () => {
 
     expect(saveConnection).toHaveBeenCalledWith(expect.anything(), undefined);
   });
+
+  it('editing a prefilled connection without re-entering the password saves with the SAME id and no secret', () => {
+    const { saveConnection } = setup({
+      connectDialogPrefill: {
+        id: 'existing-id',
+        name: 'Old name',
+        host: 'example.com',
+        port: 22,
+        username: 'bob',
+        authMethod: 'password',
+        alwaysPrompt: false,
+      },
+    });
+    render(<ConnectDialog />);
+
+    // Change a field, but do NOT retype the password.
+    fireEvent.change(screen.getByText(/^name$/i).closest('label')!.querySelector('input')!, {
+      target: { value: 'New name' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /connect$/i }));
+
+    expect(saveConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'existing-id', name: 'New name' }),
+      undefined,
+    );
+  });
 });

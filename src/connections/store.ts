@@ -109,17 +109,27 @@ export class ConnectionStore {
 
   async save(conn: SavedConnection, secret?: string): Promise<void> {
     const file = this.readFile();
+    const idx = file.connections.findIndex((c) => c.id === conn.id);
+    const existing = idx === -1 ? null : file.connections[idx];
+
     let stored: StoredConnection = { ...conn };
 
-    if (secret !== undefined && !conn.alwaysPrompt) {
+    if (conn.alwaysPrompt) {
+      // "Always prompt" means no secret should ever be stored -- clear any
+      // prior one.
+      stored = { ...conn };
+    } else if (secret !== undefined) {
       if (this.vault.state !== 'unlocked') {
         throw new Error('Cannot save a connection secret while the vault is locked.');
       }
       const { iv, ct } = await this.vault.encryptSecret(secret);
       stored = { ...conn, secret: { iv: base64Encode(iv), ct: base64Encode(ct) } };
+    } else if (existing?.secret) {
+      // No secret provided: preserve whatever was already stored (e.g. an
+      // edit that only changes metadata and doesn't retype the password).
+      stored = { ...conn, secret: existing.secret };
     }
 
-    const idx = file.connections.findIndex((c) => c.id === conn.id);
     if (idx === -1) {
       file.connections.push(stored);
     } else {

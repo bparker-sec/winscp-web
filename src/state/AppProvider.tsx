@@ -25,7 +25,7 @@ import { ConnectionStore, type SavedConnection } from '../connections/store';
 import { parseOpenSshPrivateKey } from '../ssh/privatekey';
 
 export type ConnectDialogPrefill = Partial<
-  Pick<SavedConnection, 'name' | 'host' | 'port' | 'username' | 'authMethod' | 'alwaysPrompt'>
+  Pick<SavedConnection, 'id' | 'name' | 'host' | 'port' | 'username' | 'authMethod' | 'alwaysPrompt'>
 >;
 
 interface HostKeyPromptState {
@@ -341,7 +341,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setPassphraseDialog({ mode: vault.state === 'uninitialized' ? 'set' : 'unlock' });
           return;
         }
-        const secret = await store.getSecret(id);
+        let secret: string | null;
+        try {
+          secret = await store.getSecret(id);
+        } catch {
+          setRemoteError('Could not decrypt the saved secret — re-enter it.');
+          return;
+        }
         const creds: SftpCredentials = { host: conn.host, port: conn.port, username: conn.username };
         if (conn.authMethod === 'key' && secret) {
           try {
@@ -362,6 +368,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // the Connect dialog prefilled with the saved metadata so the user can
       // supply the secret by hand.
       openConnectDialogPrefilled({
+        id: conn.id,
         name: conn.name,
         host: conn.host,
         port: conn.port,

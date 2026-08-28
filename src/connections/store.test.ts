@@ -79,14 +79,39 @@ describe('connections/store', () => {
     await expect(store.save(conn, 'password')).rejects.toThrow();
   });
 
-  it('re-saving an existing connection without a secret clears the prior secret', async () => {
+  it('re-saving an existing connection without a secret PRESERVES the prior secret', async () => {
     const conn = makeConn();
     await store.save(conn, 'password');
     expect(store.hasSecret(conn.id)).toBe(true);
 
     await store.save(conn);
+    expect(store.hasSecret(conn.id)).toBe(true);
+    expect(await store.getSecret(conn.id)).toBe('password');
+  });
+
+  it('re-saving with alwaysPrompt: true CLEARS the prior secret', async () => {
+    const conn = makeConn();
+    await store.save(conn, 'password');
+    expect(store.hasSecret(conn.id)).toBe(true);
+
+    await store.save({ ...conn, alwaysPrompt: true });
     expect(store.hasSecret(conn.id)).toBe(false);
     expect(await store.getSecret(conn.id)).toBeNull();
+  });
+
+  it('editing metadata in place (no secret passed) preserves the original secret -- proves edit-in-place works', async () => {
+    const conn = makeConn({ name: 'Original name' });
+    await store.save(conn, 'original-secret');
+    expect(store.hasSecret(conn.id)).toBe(true);
+
+    // Re-save the SAME id with different metadata and no secret.
+    await store.save({ ...conn, name: 'Renamed', host: 'renamed.example.com' });
+
+    expect(store.list()).toHaveLength(1);
+    expect(store.hasSecret(conn.id)).toBe(true);
+    expect(await store.getSecret(conn.id)).toBe('original-secret');
+    expect(store.get(conn.id)?.name).toBe('Renamed');
+    expect(store.get(conn.id)?.host).toBe('renamed.example.com');
   });
 
   it('list/remove/duplicate work as expected', async () => {

@@ -28,26 +28,30 @@ export function ConnectDialog() {
     setLocalError(null);
 
     const creds: SftpCredentials = { host, port, username };
-    let secretString: string | undefined;
 
     if (authMethod === 'key') {
       try {
         const k = parseOpenSshPrivateKey(privateKey);
         creds.privateKey = { seed: k.seed, publicKey: k.publicKey };
-        secretString = privateKey;
       } catch {
         setLocalError('Unsupported or invalid private key (encrypted keys are not yet supported).');
         return;
       }
     } else {
       creds.password = password;
-      secretString = password;
     }
 
     if (saveEnabled) {
+      // An empty secret means "not re-entered" (e.g. editing a saved
+      // connection without retyping the password) -- treat it as "not
+      // provided" so the store preserves whatever secret was already there,
+      // rather than saving a broken empty-string secret.
+      const secretString = authMethod === 'key' ? privateKey : password;
+      const id = prefill?.id ?? ConnectionStore.newId();
+      const secretToSave = alwaysPrompt || !secretString ? undefined : secretString;
       void saveConnection(
         {
-          id: ConnectionStore.newId(),
+          id,
           name: connectionName || `${username}@${host}`,
           protocol: 'sftp',
           host,
@@ -56,7 +60,7 @@ export function ConnectDialog() {
           authMethod,
           alwaysPrompt,
         },
-        alwaysPrompt ? undefined : secretString,
+        secretToSave,
       );
     }
 
