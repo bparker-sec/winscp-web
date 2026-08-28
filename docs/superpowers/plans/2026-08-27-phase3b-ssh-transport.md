@@ -6,6 +6,16 @@
 
 **Depends on:** Plan 3a (`net/ByteStream`, `ssh/wire`, `ssh/crypto/{x25519,ed25519,aesgcm,kdf}`). No changes to those.
 
+> **Status:** ✅ Implemented and **live-verified against a real OpenSSH server** via
+> `scripts/ssh-verify.mts` — curve25519 kex + ed25519 host-key verify + ed25519
+> publickey auth + `sftp` subsystem + SFTP `INIT`/`VERSION` (server SFTP v3) all
+> pass end-to-end. The live run also caught a bug the unit tests missed: a server
+> that opens a channel with `window = 0` and grants the real window via an early
+> `CHANNEL_WINDOW_ADJUST` (arriving before `CHANNEL_SUCCESS`) — `recvExpecting`
+> was dropping it and deadlocking the first write. Fixed by routing channel
+> messages through a shared `dispatchChannelMessage` from both `recvExpecting`
+> and `readLoop`.
+
 **Scope note (deliberate):** algorithms = `curve25519-sha256` kex, `ssh-ed25519` host key, `aes256-gcm@openssh.com` (+`aes128-gcm@openssh.com`) cipher, password + `ssh-ed25519` publickey auth (unencrypted OpenSSH keys). **Deferred to later plans:** RSA host keys / rsa-sha2 user keys, chacha20-poly1305, passphrase-encrypted private keys (bcrypt-pbkdf), rekeying, keyboard-interactive. These are additive and don't change the interfaces built here.
 
 ---
