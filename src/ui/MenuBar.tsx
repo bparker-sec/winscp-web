@@ -1,6 +1,7 @@
 import { IconMoon, IconSun } from './icons';
 import type { ThemeApi } from '../theme/useTheme';
 import { AccountButton } from './AccountButton';
+import { useApp } from '../state/AppProvider';
 
 interface Props {
   sessionLabel: string;
@@ -23,6 +24,7 @@ export function MenuBar({
   onConnect,
   onDisconnect,
 }: Props) {
+  const { openConnectionManager } = useApp();
   return (
     <div className="flex items-center gap-3 px-3 h-9 bg-surface border-b border-border select-none">
       <span className="font-semibold">WinSCP Web</span>
@@ -35,6 +37,13 @@ export function MenuBar({
           onConnect={onConnect}
           onDisconnect={onDisconnect}
         />
+        <button
+          className="h-7 px-2 rounded hover:bg-black/5 dark:hover:bg-white/10 text-text text-[13px]"
+          title="Saved connections"
+          onClick={openConnectionManager}
+        >
+          Saved…
+        </button>
         <button
           className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 text-text"
           title="Toggle light/dark"

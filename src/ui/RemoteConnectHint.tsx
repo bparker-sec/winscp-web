@@ -1,7 +1,7 @@
 import { useApp } from '../state/AppProvider';
 
 export function RemoteConnectHint() {
-  const { openConnectDialog, remoteError } = useApp();
+  const { openConnectDialog, openConnectionManager, remoteError } = useApp();
   return (
     <div className="flex flex-col items-center justify-center h-full gap-3 p-6 text-center">
       <div className="text-muted">Connect to an SFTP/SCP server.</div>
@@ -10,6 +10,9 @@ export function RemoteConnectHint() {
         onClick={openConnectDialog}
       >
         Connect…
+      </button>
+      <button className="text-[12px] text-muted underline" onClick={openConnectionManager}>
+        Saved connections…
       </button>
       {remoteError && (
         <div role="alert" className="text-danger text-[12px] max-w-xs">

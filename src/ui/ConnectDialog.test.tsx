@@ -18,14 +18,17 @@ const mockParseKey = parseOpenSshPrivateKey as unknown as ReturnType<typeof vi.f
 function setup(overrides: Partial<ReturnType<typeof useApp>> = {}) {
   const remoteConnect = vi.fn();
   const closeConnectDialog = vi.fn();
+  const saveConnection = vi.fn().mockResolvedValue(undefined);
   mockUseApp.mockReturnValue({
     remoteConnecting: false,
     remoteError: null,
     remoteConnect,
     closeConnectDialog,
+    connectDialogPrefill: null,
+    saveConnection,
     ...overrides,
   });
-  return { remoteConnect, closeConnectDialog };
+  return { remoteConnect, closeConnectDialog, saveConnection };
 }
 
 describe('ConnectDialog', () => {
@@ -98,5 +101,59 @@ describe('ConnectDialog', () => {
         port: 22,
       }),
     );
+  });
+
+  it('with "Save this connection" checked and a name, calls saveConnection with metadata and secret', () => {
+    const { saveConnection } = setup();
+    render(<ConnectDialog />);
+
+    fireEvent.change(screen.getByText(/^host$/i).closest('label')!.querySelector('input')!, {
+      target: { value: 'example.com' },
+    });
+    fireEvent.change(screen.getByText(/^username$/i).closest('label')!.querySelector('input')!, {
+      target: { value: 'bob' },
+    });
+    const passwordInput = document.querySelector('input[type="password"]') as HTMLInputElement;
+    fireEvent.change(passwordInput, { target: { value: 'hunter2' } });
+
+    fireEvent.click(screen.getByLabelText(/save this connection/i));
+    fireEvent.change(screen.getByText(/^name$/i).closest('label')!.querySelector('input')!, {
+      target: { value: 'My server' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /connect$/i }));
+
+    expect(saveConnection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'My server',
+        host: 'example.com',
+        username: 'bob',
+        protocol: 'sftp',
+        authMethod: 'password',
+        alwaysPrompt: false,
+      }),
+      'hunter2',
+    );
+  });
+
+  it('with "Always prompt" checked, calls saveConnection with no secret', () => {
+    const { saveConnection } = setup();
+    render(<ConnectDialog />);
+
+    fireEvent.change(screen.getByText(/^host$/i).closest('label')!.querySelector('input')!, {
+      target: { value: 'example.com' },
+    });
+    fireEvent.change(screen.getByText(/^username$/i).closest('label')!.querySelector('input')!, {
+      target: { value: 'bob' },
+    });
+    const passwordInput = document.querySelector('input[type="password"]') as HTMLInputElement;
+    fireEvent.change(passwordInput, { target: { value: 'hunter2' } });
+
+    fireEvent.click(screen.getByLabelText(/save this connection/i));
+    fireEvent.click(screen.getByLabelText(/always prompt/i));
+
+    fireEvent.click(screen.getByRole('button', { name: /connect$/i }));
+
+    expect(saveConnection).toHaveBeenCalledWith(expect.anything(), undefined);
   });
 });

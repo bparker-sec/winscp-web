@@ -20,6 +20,13 @@ import {
 import { sdkGetUser } from '../sdk/client';
 import { connectSftp, type SftpConnection, type SftpCredentials } from '../sftp/SftpConnection';
 import { rememberHost } from '../ssh/knownhosts';
+import { Vault, type VaultState } from '../connections/vault';
+import { ConnectionStore, type SavedConnection } from '../connections/store';
+import { parseOpenSshPrivateKey } from '../ssh/privatekey';
+
+export type ConnectDialogPrefill = Partial<
+  Pick<SavedConnection, 'name' | 'host' | 'port' | 'username' | 'authMethod' | 'alwaysPrompt'>
+>;
 
 interface HostKeyPromptState {
   host: string;
@@ -35,6 +42,7 @@ interface AppState {
   remoteConnecting: boolean;
   remoteError: string | null;
   connectDialogOpen: boolean;
+  connectDialogPrefill: ConnectDialogPrefill | null;
   hostKeyPrompt: HostKeyPromptState | null;
   openConnectDialog: () => void;
   closeConnectDialog: () => void;
@@ -48,6 +56,21 @@ interface AppState {
   disconnect: () => void;
   splitRatio: number;
   setSplitRatio: (r: number) => void;
+  // Connection manager / vault
+  connections: SavedConnection[];
+  connectionManagerOpen: boolean;
+  passphraseDialog: { mode: 'set' | 'unlock' } | null;
+  vaultState: VaultState;
+  openConnectionManager: () => void;
+  closeConnectionManager: () => void;
+  saveConnection: (conn: SavedConnection, secret?: string) => Promise<void>;
+  deleteConnection: (id: string) => void;
+  duplicateConnection: (id: string) => void;
+  setMasterPassphrase: (pass: string) => Promise<void>;
+  unlockVault: (pass: string) => Promise<boolean>;
+  closePassphraseDialog: () => void;
+  connectSaved: (id: string) => Promise<void>;
+  openConnectDialogPrefilled: (prefill: ConnectDialogPrefill) => void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -70,19 +93,134 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [remoteConnecting, setRemoteConnecting] = useState(false);
   const [remoteError, setRemoteError] = useState<string | null>(null);
   const [connectDialogOpen, setConnectDialogOpen] = useState(false);
+  const [connectDialogPrefill, setConnectDialogPrefill] = useState<ConnectDialogPrefill | null>(null);
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptState | null>(null);
   const remoteConnRef = useRef<SftpConnection | null>(null);
   const hostKeyResolverRef = useRef<((accept: boolean) => void) | null>(null);
   const pendingHostRef = useRef<{ host: string; port: number } | null>(null);
 
+  // Vault + connection store
+  const vault = useMemo(() => new Vault(), []);
+  const store = useMemo(() => new ConnectionStore(vault), [vault]);
+  const [connections, setConnections] = useState<SavedConnection[]>(() => store.list());
+  const [connectionManagerOpen, setConnectionManagerOpen] = useState(false);
+  const [passphraseDialog, setPassphraseDialog] = useState<{ mode: 'set' | 'unlock' } | null>(null);
+  const [vaultState, setVaultState] = useState<VaultState>(vault.state);
+  const pendingSaveRef = useRef<{ conn: SavedConnection; secret?: string } | null>(null);
+  const pendingConnectIdRef = useRef<string | null>(null);
+  const connectSavedRef = useRef<((id: string) => Promise<void>) | null>(null);
+
+  const refreshConnections = useCallback(() => {
+    setConnections(store.list());
+  }, [store]);
+
   const openConnectDialog = useCallback(() => {
     setRemoteError(null);
+    setConnectDialogPrefill(null);
+    setConnectDialogOpen(true);
+  }, []);
+
+  const openConnectDialogPrefilled = useCallback((prefill: ConnectDialogPrefill) => {
+    setRemoteError(null);
+    setConnectDialogPrefill(prefill);
     setConnectDialogOpen(true);
   }, []);
 
   const closeConnectDialog = useCallback(() => {
     setConnectDialogOpen(false);
+    setConnectDialogPrefill(null);
   }, []);
+
+  const openConnectionManager = useCallback(() => {
+    refreshConnections();
+    setConnectionManagerOpen(true);
+  }, [refreshConnections]);
+
+  const closeConnectionManager = useCallback(() => {
+    setConnectionManagerOpen(false);
+  }, []);
+
+  const closePassphraseDialog = useCallback(() => {
+    setPassphraseDialog(null);
+    pendingSaveRef.current = null;
+    pendingConnectIdRef.current = null;
+  }, []);
+
+  const saveConnection = useCallback(
+    async (conn: SavedConnection, secret?: string) => {
+      const wantsSecret = secret !== undefined && !conn.alwaysPrompt;
+      if (wantsSecret && vault.state === 'uninitialized') {
+        pendingSaveRef.current = { conn, secret };
+        setPassphraseDialog({ mode: 'set' });
+        return;
+      }
+      if (wantsSecret && vault.state === 'locked') {
+        pendingSaveRef.current = { conn, secret };
+        setPassphraseDialog({ mode: 'unlock' });
+        return;
+      }
+      await store.save(conn, secret);
+      refreshConnections();
+    },
+    [store, vault, refreshConnections],
+  );
+
+  const deleteConnection = useCallback(
+    (id: string) => {
+      store.remove(id);
+      refreshConnections();
+    },
+    [store, refreshConnections],
+  );
+
+  const duplicateConnection = useCallback(
+    (id: string) => {
+      store.duplicate(id);
+      refreshConnections();
+    },
+    [store, refreshConnections],
+  );
+
+  const runPendingSave = useCallback(async () => {
+    const pending = pendingSaveRef.current;
+    if (!pending) return;
+    pendingSaveRef.current = null;
+    await store.save(pending.conn, pending.secret);
+    refreshConnections();
+  }, [store, refreshConnections]);
+
+  const setMasterPassphrase = useCallback(
+    async (pass: string) => {
+      await vault.initialize(pass);
+      setVaultState(vault.state);
+      setPassphraseDialog(null);
+      await runPendingSave();
+      const pendingConnectId = pendingConnectIdRef.current;
+      pendingConnectIdRef.current = null;
+      if (pendingConnectId) {
+        await connectSavedRef.current?.(pendingConnectId);
+      }
+    },
+    [vault, runPendingSave],
+  );
+
+  const unlockVault = useCallback(
+    async (pass: string): Promise<boolean> => {
+      const ok = await vault.unlock(pass);
+      setVaultState(vault.state);
+      if (ok) {
+        setPassphraseDialog(null);
+        await runPendingSave();
+        const pendingConnectId = pendingConnectIdRef.current;
+        pendingConnectIdRef.current = null;
+        if (pendingConnectId) {
+          await connectSavedRef.current?.(pendingConnectId);
+        }
+      }
+      return ok;
+    },
+    [vault, runPendingSave],
+  );
 
   const refreshUser = useCallback(async () => {
     const u = await sdkGetUser();
@@ -192,6 +330,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
+  const connectSaved = useCallback(
+    async (id: string) => {
+      const conn = store.get(id);
+      if (!conn) return;
+
+      if (!conn.alwaysPrompt && store.hasSecret(id)) {
+        if (vault.state !== 'unlocked') {
+          pendingConnectIdRef.current = id;
+          setPassphraseDialog({ mode: vault.state === 'uninitialized' ? 'set' : 'unlock' });
+          return;
+        }
+        const secret = await store.getSecret(id);
+        const creds: SftpCredentials = { host: conn.host, port: conn.port, username: conn.username };
+        if (conn.authMethod === 'key' && secret) {
+          try {
+            const k = parseOpenSshPrivateKey(secret);
+            creds.privateKey = { seed: k.seed, publicKey: k.publicKey };
+          } catch {
+            setRemoteError('Unsupported or invalid private key (encrypted keys are not yet supported).');
+            return;
+          }
+        } else if (secret) {
+          creds.password = secret;
+        }
+        remoteConnect(creds);
+        return;
+      }
+
+      // No stored secret, or the connection is marked "always prompt": open
+      // the Connect dialog prefilled with the saved metadata so the user can
+      // supply the secret by hand.
+      openConnectDialogPrefilled({
+        name: conn.name,
+        host: conn.host,
+        port: conn.port,
+        username: conn.username,
+        authMethod: conn.authMethod,
+        alwaysPrompt: conn.alwaysPrompt,
+      });
+    },
+    [store, vault, remoteConnect, openConnectDialogPrefilled],
+  );
+  connectSavedRef.current = connectSaved;
+
   const remoteDisconnect = useCallback(() => {
     remoteConnRef.current?.close().catch(() => {});
     remoteConnRef.current = null;
@@ -208,6 +390,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     remoteConnecting,
     remoteError,
     connectDialogOpen,
+    connectDialogPrefill,
     hostKeyPrompt,
     openConnectDialog,
     closeConnectDialog,
@@ -221,6 +404,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     disconnect,
     splitRatio,
     setSplitRatio,
+    connections,
+    connectionManagerOpen,
+    passphraseDialog,
+    vaultState,
+    openConnectionManager,
+    closeConnectionManager,
+    saveConnection,
+    deleteConnection,
+    duplicateConnection,
+    setMasterPassphrase,
+    unlockVault,
+    closePassphraseDialog,
+    connectSaved,
+    openConnectDialogPrefilled,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

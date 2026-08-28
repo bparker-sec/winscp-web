@@ -14,20 +14,34 @@ describe('RemoteConnectHint', () => {
     mockUseApp.mockReset();
   });
 
-  it('the button calls openConnectDialog', () => {
+  it('the Connect button calls openConnectDialog', () => {
     const openConnectDialog = vi.fn();
     mockUseApp.mockReturnValue({
       openConnectDialog,
+      openConnectionManager: vi.fn(),
       remoteError: null,
     });
     render(<RemoteConnectHint />);
-    fireEvent.click(screen.getByRole('button'));
+    fireEvent.click(screen.getByRole('button', { name: /^connect/i }));
     expect(openConnectDialog).toHaveBeenCalled();
+  });
+
+  it('the Saved connections link calls openConnectionManager', () => {
+    const openConnectionManager = vi.fn();
+    mockUseApp.mockReturnValue({
+      openConnectDialog: vi.fn(),
+      openConnectionManager,
+      remoteError: null,
+    });
+    render(<RemoteConnectHint />);
+    fireEvent.click(screen.getByRole('button', { name: /saved connections/i }));
+    expect(openConnectionManager).toHaveBeenCalled();
   });
 
   it('shows remoteError when present', () => {
     mockUseApp.mockReturnValue({
       openConnectDialog: vi.fn(),
+      openConnectionManager: vi.fn(),
       remoteError: 'boom',
     });
     render(<RemoteConnectHint />);

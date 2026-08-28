@@ -9,6 +9,8 @@ import { ConnectHint } from '../ui/ConnectHint';
 import { RemoteConnectHint } from '../ui/RemoteConnectHint';
 import { ConnectDialog } from '../ui/ConnectDialog';
 import { HostKeyPrompt } from '../ui/HostKeyPrompt';
+import { ConnectionManager } from '../ui/ConnectionManager';
+import { MasterPassphraseDialog } from '../ui/MasterPassphraseDialog';
 
 export function Commander() {
   const {
@@ -26,6 +28,8 @@ export function Commander() {
     userName,
     connect,
     disconnect,
+    connectionManagerOpen,
+    passphraseDialog,
   } = useApp();
   return (
     <div className="flex flex-col h-full">
@@ -63,6 +67,8 @@ export function Commander() {
       />
       {connectDialogOpen && <ConnectDialog />}
       {hostKeyPrompt && <HostKeyPrompt />}
+      {connectionManagerOpen && <ConnectionManager />}
+      {passphraseDialog && <MasterPassphraseDialog />}
     </div>
   );
 }

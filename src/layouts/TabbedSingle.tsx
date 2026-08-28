@@ -9,6 +9,8 @@ import { ConnectHint } from '../ui/ConnectHint';
 import { RemoteConnectHint } from '../ui/RemoteConnectHint';
 import { ConnectDialog } from '../ui/ConnectDialog';
 import { HostKeyPrompt } from '../ui/HostKeyPrompt';
+import { ConnectionManager } from '../ui/ConnectionManager';
+import { MasterPassphraseDialog } from '../ui/MasterPassphraseDialog';
 
 export function TabbedSingle() {
   const {
@@ -24,6 +26,8 @@ export function TabbedSingle() {
     userName,
     connect,
     disconnect,
+    connectionManagerOpen,
+    passphraseDialog,
   } = useApp();
   const [side, setSide] = useState<'local' | 'remote'>('local');
 
@@ -71,6 +75,8 @@ export function TabbedSingle() {
       <StatusBar left={side === 'local' ? (local?.label ?? 'OneDrive') : (remote?.label ?? 'remote')} />
       {connectDialogOpen && <ConnectDialog />}
       {hostKeyPrompt && <HostKeyPrompt />}
+      {connectionManagerOpen && <ConnectionManager />}
+      {passphraseDialog && <MasterPassphraseDialog />}
     </div>
   );
 }
