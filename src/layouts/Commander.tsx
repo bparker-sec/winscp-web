@@ -6,10 +6,27 @@ import { Splitter } from '../ui/Splitter';
 import { PaneView } from '../ui/PaneView';
 import { TransferQueue } from '../ui/TransferQueue';
 import { ConnectHint } from '../ui/ConnectHint';
+import { RemoteConnectHint } from '../ui/RemoteConnectHint';
+import { ConnectDialog } from '../ui/ConnectDialog';
+import { HostKeyPrompt } from '../ui/HostKeyPrompt';
 
 export function Commander() {
-  const { theme, local, remote, splitRatio, setSplitRatio, connecting, connectError, userName, connect, disconnect } =
-    useApp();
+  const {
+    theme,
+    local,
+    remote,
+    remoteHome,
+    remoteDisconnect,
+    connectDialogOpen,
+    hostKeyPrompt,
+    splitRatio,
+    setSplitRatio,
+    connecting,
+    connectError,
+    userName,
+    connect,
+    disconnect,
+  } = useApp();
   return (
     <div className="flex flex-col h-full">
       <MenuBar
@@ -33,17 +50,19 @@ export function Commander() {
         <Splitter ratio={splitRatio} onRatio={setSplitRatio} />
         <div className="flex-1 min-w-0">
           {remote ? (
-            <PaneView fs={remote} header={remote.label} />
+            <PaneView fs={remote} header={remote.label} initialPath={remoteHome} onDisconnect={remoteDisconnect} />
           ) : (
-            <div className="p-4 text-muted">Not connected.</div>
+            <RemoteConnectHint />
           )}
         </div>
       </div>
       <TransferQueue items={[]} />
       <StatusBar
         left={local ? `Local: ${local.label}` : 'Local: not connected'}
-        right={remote ? `Remote: ${remote.label}` : 'No session'}
+        right={remote ? `Remote: ${remote.label}` : 'Remote: not connected'}
       />
+      {connectDialogOpen && <ConnectDialog />}
+      {hostKeyPrompt && <HostKeyPrompt />}
     </div>
   );
 }

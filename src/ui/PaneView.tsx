@@ -8,6 +8,8 @@ type SortKey = 'name' | 'size' | 'mtime';
 interface Props {
   fs: FileSystem;
   header: string;
+  initialPath?: string;
+  onDisconnect?: () => void;
 }
 
 function fmtSize(n?: number): string {
@@ -22,8 +24,8 @@ function fmtDate(ms?: number): string {
   return new Date(ms).toISOString().slice(0, 16).replace('T', ' ');
 }
 
-export function PaneView({ fs, header }: Props) {
-  const [cwd, setCwd] = useState('/');
+export function PaneView({ fs, header, initialPath = '/', onDisconnect }: Props) {
+  const [cwd, setCwd] = useState(initialPath);
   const [entries, setEntries] = useState<FsEntry[]>([]);
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -55,6 +57,14 @@ export function PaneView({ fs, header }: Props) {
       <div className="px-2 py-1 border-b border-border font-semibold flex items-center gap-2">
         <span className="truncate">{header}</span>
         <span className="text-muted font-normal truncate">· {cwd}</span>
+        {onDisconnect && (
+          <button
+            className="ml-auto text-muted font-normal text-[11px] hover:text-danger"
+            onClick={onDisconnect}
+          >
+            Disconnect
+          </button>
+        )}
       </div>
       <div className="grid grid-cols-[1fr_80px_130px] px-2 py-1 text-[11px] text-muted border-b border-border">
         <button className="text-left" onClick={() => setSortKey('name')}>Name</button>
