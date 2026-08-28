@@ -59,6 +59,12 @@ const DEFAULT_MAX_PACKET = 32768;
 export interface SshClientOptions {
   host: string;
   port: number;
+  /**
+   * Called at most once when the connection is unexpectedly lost (transport
+   * error, peer DISCONNECT, or a failed keepalive send indicating the peer
+   * TCP is gone). NOT called on an intentional `disconnect()`.
+   */
+  onClosed?: (reason: string) => void;
 }
 
 export type TrustCallback = (info: {
@@ -103,6 +109,8 @@ export class SshClient {
   private readonly stream: ByteStream;
   private readonly host: string;
   private readonly port: number;
+  private readonly onClosed?: (reason: string) => void;
+  private notifiedClosed = false;
 
   private c2sCipher: Cipher = new NoneCipher();
   private s2cCipher: Cipher = new NoneCipher();
@@ -132,6 +140,7 @@ export class SshClient {
     this.stream = stream;
     this.host = opts.host;
     this.port = opts.port;
+    this.onClosed = opts.onClosed;
   }
 
   private send(payload: Uint8Array): Promise<void> {
@@ -150,7 +159,12 @@ export class SshClient {
       // the read loop consumes — generating regular inbound traffic.
       void this.send(
         new SshWriter().byte(SSH_MSG_GLOBAL_REQUEST).string('keepalive@openssh.com').bool(true).finish(),
-      ).catch(() => {});
+      ).catch((err: unknown) => {
+        // A failed send means the underlying TCP is gone — detect that dead
+        // connection now (~within one keepalive interval) rather than waiting
+        // for a stalled receive to eventually notice.
+        this.teardownChannels(err instanceof Error ? err : new Error(String(err)));
+      });
     }, SshClient.KEEPALIVE_INTERVAL_MS);
   }
 
@@ -436,9 +450,16 @@ export class SshClient {
       channel.onClose(reason);
     }
     this.channels.clear();
+    if (!this.notifiedClosed) {
+      this.notifiedClosed = true;
+      this.onClosed?.(reason);
+    }
   }
 
   async disconnect(): Promise<void> {
+    // User-initiated: suppress the onClosed notification that teardownChannels
+    // would otherwise fire, since this isn't an unexpected connection loss.
+    this.notifiedClosed = true;
     this.closed = true;
     this.stopKeepalive();
     try {

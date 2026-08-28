@@ -409,6 +409,54 @@ describe('SshClient keepalive scheduling', () => {
   });
 });
 
+describe('SshClient onClosed — connection-lost signal', () => {
+  it('fires onClosed exactly once with the reason when teardownChannels runs', async () => {
+    const onClosed = vi.fn();
+    const { client } = newClient([]);
+    (client as any).onClosed = onClosed;
+
+    (client as any).teardownChannels(new Error('boom'));
+    (client as any).teardownChannels(new Error('boom again'));
+
+    expect(onClosed).toHaveBeenCalledTimes(1);
+    expect(onClosed).toHaveBeenCalledWith('boom');
+  });
+
+  it('does not fire onClosed on an intentional disconnect()', async () => {
+    const onClosed = vi.fn();
+    const { client } = newClient([]);
+    (client as any).onClosed = onClosed;
+
+    await client.disconnect();
+
+    expect(onClosed).not.toHaveBeenCalled();
+  });
+
+  it('a failing keepalive send triggers teardown and fires onClosed (fast dead-connection detection)', async () => {
+    vi.useFakeTimers();
+    try {
+      const onClosed = vi.fn();
+      const socket = new FakeSocket(new Uint8Array(0));
+      socket.send = async () => {
+        throw new Error('socket write failed: peer gone');
+      };
+      const stream = new ByteStream(socket);
+      const client = new SshClient(stream, { host: 'example.com', port: 22, onClosed });
+
+      (client as any).startKeepalive();
+      await vi.advanceTimersByTimeAsync(25_000);
+      // Let the rejected send()'s .catch() microtask run.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(onClosed).toHaveBeenCalledTimes(1);
+      expect((client as any).keepaliveTimer).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 /** Decode a single wire-framed none-cipher packet back to its payload, for asserting on client-sent bytes. */
 function decodeNoneCipherPacket(wire: Uint8Array): Uint8Array {
   const packetLength = new DataView(wire.buffer, wire.byteOffset, 4).getUint32(0);

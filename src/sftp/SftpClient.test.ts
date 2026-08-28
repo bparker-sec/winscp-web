@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { SshWriter } from '../ssh/wire';
 import { encodeAttrs, type FileAttrs } from './attrs';
 import {
@@ -12,7 +12,7 @@ import {
   SSH_FXP_STATUS,
   SSH_FXP_VERSION,
 } from './constants';
-import { SftpClient, SftpError, type SftpChannel } from './SftpClient';
+import { SftpClient, SftpError, SftpTimeoutError, type SftpChannel } from './SftpClient';
 
 /** Full wire packet: uint32 length || byte type || body. */
 function packet(type: number, body: Uint8Array): Uint8Array {
@@ -283,5 +283,52 @@ describe('SftpClient', () => {
 
     const attrs = await client.stat('/tmp/foo');
     expect(attrs).toEqual({ size: 7 });
+  });
+});
+
+describe('SftpClient per-operation timeout', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('rejects a stuck operation with SftpTimeoutError after the timeout, without tearing down the channel', async () => {
+    const channel = new FakeChannel();
+    const client = new SftpClient(channel, { opTimeoutMs: 1000 });
+    channel.enqueue(versionPacket(3));
+    await client.init();
+
+    // Never enqueue a response for this stat() — simulate a stuck op.
+    const statPromise = client.stat('/tmp/stuck');
+    const assertion = expect(statPromise).rejects.toBeInstanceOf(SftpTimeoutError);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await assertion;
+
+    // Pending map is emptied for the timed-out request.
+    expect((client as unknown as { pending: Map<number, unknown> }).pending.size).toBe(0);
+
+    // The channel/readLoop survived: a subsequent operation still works.
+    const nextStatPromise = client.stat('/tmp/ok');
+    channel.enqueue(attrsPacket(2, { size: 99 }));
+    await expect(nextStatPromise).resolves.toEqual({ size: 99 });
+  });
+
+  it('a normal fast response clears the timeout so no spurious timeout fires later', async () => {
+    const channel = new FakeChannel();
+    const client = new SftpClient(channel, { opTimeoutMs: 1000 });
+    channel.enqueue(versionPacket(3));
+    await client.init();
+
+    channel.enqueue(attrsPacket(1, { size: 5 }));
+    const attrs = await client.stat('/tmp/foo');
+    expect(attrs).toEqual({ size: 5 });
+
+    // Advance well past the timeout window; nothing should reject or throw,
+    // since the response already resolved and cleared the timer.
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((client as unknown as { pending: Map<number, unknown> }).pending.size).toBe(0);
   });
 });

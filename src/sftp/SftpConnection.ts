@@ -31,6 +31,7 @@ export async function connectSftp(
   creds: SftpCredentials,
   trust?: TrustCallback,
   label?: string,
+  opts?: { onClosed?: (reason: string) => void },
 ): Promise<SftpConnection> {
   const { host, port, username } = creds;
 
@@ -40,7 +41,7 @@ export async function connectSftp(
   }
 
   const stream = new ByteStream(tcpResult.socket);
-  const ssh = new SshClient(stream, { host, port });
+  const ssh = new SshClient(stream, { host, port, onClosed: opts?.onClosed });
 
   const { fingerprint } = await ssh.connect(trust);
   await ssh.authenticate({

@@ -44,9 +44,19 @@ export class SftpError extends Error {
   }
 }
 
+/** Thrown when a single SFTP operation exceeds its per-request timeout. The
+ * channel and read loop are unaffected — only the timed-out operation fails. */
+export class SftpTimeoutError extends Error {
+  constructor(message = 'Operation timed out') {
+    super(message);
+    this.name = 'SftpTimeoutError';
+  }
+}
+
 interface Pending {
   resolve: (pkt: SftpPacket) => void;
   reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 /** Read the leading `uint32 id` from a response body without a full parse. */
@@ -54,14 +64,21 @@ function peekId(body: Uint8Array): number {
   return new DataView(body.buffer, body.byteOffset, body.byteLength).getUint32(0);
 }
 
+const DEFAULT_OP_TIMEOUT_MS = 30_000;
+
 export class SftpClient {
   private readonly framer: SftpFramer;
   private nextRequestId = 1;
   private readonly pending = new Map<number, Pending>();
   private loopStarted = false;
+  private readonly opTimeoutMs: number;
 
-  constructor(private readonly channel: SftpChannel) {
+  constructor(
+    private readonly channel: SftpChannel,
+    opts: { opTimeoutMs?: number } = {},
+  ) {
     this.framer = new SftpFramer(() => this.channel.read());
+    this.opTimeoutMs = opts.opTimeoutMs ?? DEFAULT_OP_TIMEOUT_MS;
   }
 
   private nextId(): number {
@@ -98,7 +115,10 @@ export class SftpClient {
         pkt = await this.framer.next();
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
-        for (const waiter of this.pending.values()) waiter.reject(error);
+        for (const waiter of this.pending.values()) {
+          clearTimeout(waiter.timer);
+          waiter.reject(error);
+        }
         this.pending.clear();
         return;
       }
@@ -106,6 +126,7 @@ export class SftpClient {
       const waiter = this.pending.get(id);
       if (waiter) {
         this.pending.delete(id);
+        clearTimeout(waiter.timer);
         waiter.resolve(pkt);
       }
       // Unmatched responses (e.g. stray/duplicate ids) are dropped.
@@ -117,12 +138,26 @@ export class SftpClient {
    * before any response can arrive. If the write itself fails, the pending
    * entry is dropped and THIS request's promise is rejected (never orphaned
    * in `this.pending`), so callers always get a settled promise to await.
+   *
+   * A per-request timeout guards against a stuck operation (e.g. a server
+   * that never replies): if no response for `id` arrives within
+   * `opTimeoutMs`, only THIS operation is failed with `SftpTimeoutError` —
+   * the channel and read loop are left untouched so other in-flight and
+   * future operations keep working.
    */
   private request(bytes: Uint8Array, id: number): Promise<SftpPacket> {
     return new Promise<SftpPacket>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.channel.write(bytes).catch((err: unknown) => {
+      const timer = setTimeout(() => {
         if (this.pending.delete(id)) {
+          reject(new SftpTimeoutError());
+        }
+      }, this.opTimeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      this.channel.write(bytes).catch((err: unknown) => {
+        const p = this.pending.get(id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.pending.delete(id);
           reject(err instanceof Error ? err : new Error(String(err)));
         }
       });
@@ -165,7 +200,10 @@ export class SftpClient {
   async close(): Promise<void> {
     await this.channel.close();
     const error = new Error('SFTP client closed');
-    for (const waiter of this.pending.values()) waiter.reject(error);
+    for (const waiter of this.pending.values()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
     this.pending.clear();
   }
 
