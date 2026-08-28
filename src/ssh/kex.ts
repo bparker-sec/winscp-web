@@ -197,3 +197,15 @@ export function deriveSessionKeys(sharedSecret: Uint8Array, h: Uint8Array, sessi
     keyS2C: deriveKey(kMpint, h, 'D', sessionId, KEY_LEN),
   };
 }
+
+/**
+ * AES key length in bytes for a negotiated GCM cipher name. `deriveSessionKeys`
+ * always derives 32-byte key material (a KDF byte stream); the first N bytes of
+ * that stream ARE the correct N-byte key, so callers slice to this length before
+ * constructing a `GcmCipher` — `@noble/ciphers`' `gcm()` selects AES-128 vs
+ * AES-256 purely by key length, so passing the full 32 bytes for aes128-gcm
+ * would silently frame with AES-256 and break interop with an aes128 peer.
+ */
+export function gcmKeyLength(cipher: string): number {
+  return cipher === 'aes128-gcm@openssh.com' ? 16 : 32;
+}

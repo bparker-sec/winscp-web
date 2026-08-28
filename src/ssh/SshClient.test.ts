@@ -256,6 +256,28 @@ describe('SshClient.openSubsystem — early CHANNEL_WINDOW_ADJUST regression', (
   });
 });
 
+describe('SshClient.openSubsystem — single subsystem per client', () => {
+  it('throws on a second openSubsystem() call once the read loop has started', async () => {
+    const openConfirmation = new SshWriter()
+      .byte(SSH_MSG_CHANNEL_OPEN_CONFIRMATION)
+      .uint32(0)
+      .uint32(0)
+      .uint32(2097152) // normal window this time
+      .uint32(32768)
+      .finish();
+    const subsystemSuccess = new SshWriter().byte(SSH_MSG_CHANNEL_SUCCESS).uint32(0).finish();
+
+    const { client } = newClient([openConfirmation, subsystemSuccess]);
+
+    await client.openSubsystem('sftp');
+    expect((client as any).readLoopStarted).toBe(true);
+
+    await expect(client.openSubsystem('sftp')).rejects.toThrow(
+      /single subsystem\/channel per connection/,
+    );
+  });
+});
+
 /** Decode a single wire-framed none-cipher packet back to its payload, for asserting on client-sent bytes. */
 function decodeNoneCipherPacket(wire: Uint8Array): Uint8Array {
   const packetLength = new DataView(wire.buffer, wire.byteOffset, 4).getUint32(0);

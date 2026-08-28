@@ -13,6 +13,7 @@ import {
   computeExchangeHash,
   verifyHostSignature,
   deriveSessionKeys,
+  gcmKeyLength,
   CLIENT_KEX_ALGORITHMS,
   CLIENT_HOST_KEY_ALGORITHMS,
   CLIENT_CIPHER_ALGORITHMS,
@@ -276,8 +277,13 @@ export class SshClient {
     await this.recvExpecting((m) => m === SSH_MSG_NEWKEYS);
 
     const keys = deriveSessionKeys(sharedSecret, h, this.sessionId);
-    this.c2sCipher = new GcmCipher(keys.keyC2S, keys.ivC2S);
-    this.s2cCipher = new GcmCipher(keys.keyS2C, keys.ivS2C);
+    // The KDF always derives 32 bytes of key material; slice to the negotiated
+    // cipher's actual key length (16 for aes128-gcm, 32 for aes256-gcm) per
+    // direction — @noble/ciphers picks AES-128 vs AES-256 by key length.
+    const keyC2S = keys.keyC2S.subarray(0, gcmKeyLength(cipherC2S));
+    const keyS2C = keys.keyS2C.subarray(0, gcmKeyLength(cipherS2C));
+    this.c2sCipher = new GcmCipher(keyC2S, keys.ivC2S);
+    this.s2cCipher = new GcmCipher(keyS2C, keys.ivS2C);
 
     return { fingerprint: check.fingerprint };
   }
@@ -318,6 +324,9 @@ export class SshClient {
   }
 
   async openSubsystem(name: string): Promise<SshChannel> {
+    if (this.readLoopStarted) {
+      throw new Error('SshClient supports a single subsystem/channel per connection.');
+    }
     const local = this.nextLocalChannel++;
     await this.send(buildChannelOpenSession(local, DEFAULT_CHANNEL_WINDOW, DEFAULT_MAX_PACKET));
 

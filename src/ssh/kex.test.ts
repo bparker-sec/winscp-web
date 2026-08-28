@@ -12,6 +12,7 @@ import {
   parseSignatureEd25519,
   verifyHostSignature,
   deriveSessionKeys,
+  gcmKeyLength,
   CLIENT_KEX_ALGORITHMS,
   CLIENT_HOST_KEY_ALGORITHMS,
   CLIENT_CIPHER_ALGORITHMS,
@@ -182,5 +183,15 @@ describe('deriveSessionKeys', () => {
     const expectedKeyC2S = deriveKey(kMpint, H, 'C', sessionId, 32);
     const keys = deriveSessionKeys(sharedSecret, H, sessionId);
     expect(Array.from(keys.keyC2S)).toEqual(Array.from(expectedKeyC2S));
+  });
+});
+
+describe('gcmKeyLength', () => {
+  it('returns 16 for aes128-gcm@openssh.com', () => {
+    expect(gcmKeyLength('aes128-gcm@openssh.com')).toBe(16);
+  });
+
+  it('returns 32 for aes256-gcm@openssh.com', () => {
+    expect(gcmKeyLength('aes256-gcm@openssh.com')).toBe(32);
   });
 });
