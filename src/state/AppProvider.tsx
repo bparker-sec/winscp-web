@@ -25,9 +25,7 @@ import { ConnectionStore, type SavedConnection } from '../connections/store';
 import { parseOpenSshPrivateKey } from '../ssh/privatekey';
 import { TransferQueue, type TransferJob, type ConflictChoice } from '../transfer/queue';
 import { diag } from '../diagnostics/log';
-
-/** How long the vault stays unlocked after an unlock/use before it auto-locks (sliding window). */
-const VAULT_LOCK_MS = 15 * 60 * 1000;
+import { getSettings, setSettings } from '../settings/appSettings';
 
 function errorCode(e: unknown): string | undefined {
   if (e && typeof e === 'object' && 'code' in e) {
@@ -109,6 +107,8 @@ interface AppState {
   settingsOpen: boolean;
   openSettings: () => void;
   closeSettings: () => void;
+  vaultLockMinutes: number;
+  setVaultLockMinutes: (minutes: number) => void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -148,9 +148,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const pendingConnectIdRef = useRef<string | null>(null);
   const connectSavedRef = useRef<((id: string) => Promise<void>) | null>(null);
   const vaultLockTimerRef = useRef<number | null>(null);
+  const [vaultLockMinutes, setVaultLockMinutesState] = useState<number>(
+    () => getSettings().vaultLockMinutes,
+  );
 
   // Sliding auto-lock: any successful unlock or vault use restarts this timer.
-  // If nothing touches the vault for VAULT_LOCK_MS, it locks itself.
+  // If nothing touches the vault for `vaultLockMinutes` of inactivity, it locks
+  // itself. A setting of 0 means "never auto-lock" -- stay unlocked for the
+  // session (no timer is armed).
   const clearVaultLockTimer = useCallback(() => {
     if (vaultLockTimerRef.current !== null) {
       window.clearTimeout(vaultLockTimerRef.current);
@@ -160,13 +165,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const touchVault = useCallback(() => {
     clearVaultLockTimer();
+    const minutes = getSettings().vaultLockMinutes;
+    if (minutes <= 0) return;
     vaultLockTimerRef.current = window.setTimeout(() => {
       vaultLockTimerRef.current = null;
       vault.lock();
       setVaultState(vault.state);
       diag.info('Vault auto-locked after inactivity');
-    }, VAULT_LOCK_MS);
+    }, minutes * 60_000);
   }, [clearVaultLockTimer, vault]);
+
+  const setVaultLockMinutes = useCallback(
+    (minutes: number) => {
+      setSettings({ vaultLockMinutes: minutes });
+      setVaultLockMinutesState(minutes);
+      // Re-arm immediately so the new duration takes effect while unlocked
+      // (or clears the timer entirely if the vault is locked/uninitialized).
+      if (vault.state === 'unlocked') {
+        touchVault();
+      } else {
+        clearVaultLockTimer();
+      }
+    },
+    [vault, touchVault, clearVaultLockTimer],
+  );
 
   useEffect(() => clearVaultLockTimer, [clearVaultLockTimer]);
 
@@ -642,6 +664,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     settingsOpen,
     openSettings,
     closeSettings,
+    vaultLockMinutes,
+    setVaultLockMinutes,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

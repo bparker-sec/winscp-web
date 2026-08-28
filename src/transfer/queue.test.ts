@@ -578,6 +578,57 @@ describe('TransferQueue', () => {
     expect(openWriteCalls[0].resume).toBe(false);
   });
 
+  it('does not re-prompt the conflict resolver when retrying a resumed job whose partial dest exists', async () => {
+    const full = 'y'.repeat(1000);
+    const src = new MockFS('src');
+    await writeFile(src, '/resume.bin', full);
+
+    const dst = new MockFS('dst');
+    // Pre-seed a partial destination, as a first attempt would have left behind.
+    await writeFile(dst, '/resume.bin', full.slice(0, 400));
+
+    let failFirstRead = true;
+    const flakySrc = wrapFs(src, {
+      openRead: async (path: string, offset?: number) => {
+        if (failFirstRead) {
+          failFirstRead = false;
+          throw new Error('simulated network drop');
+        }
+        return src.openRead(path, offset);
+      },
+    });
+
+    const conflictSpy = vi.fn(async () => 'overwrite' as ConflictChoice);
+    const queue = new TransferQueue({ conflict: conflictSpy });
+    const id = queue.enqueue({
+      name: 'resume.bin',
+      direction: 'up',
+      src: flakySrc,
+      srcPath: '/resume.bin',
+      dst,
+      dstPath: '/resume.bin',
+      size: 1000,
+      isDir: false,
+    });
+
+    const errored = await waitForState(queue, id, TERMINAL);
+    expect(errored.state).toBe('error');
+    // The conflict resolver must not have been invoked on the fresh attempt
+    // either -- the pre-seeded partial predates this job entirely, but that's
+    // a pre-existing scenario the fresh-attempt conflict check would normally
+    // catch. What matters here is the retry below.
+    conflictSpy.mockClear();
+
+    queue.retry(id);
+    const done = await waitForState(queue, id, TERMINAL);
+    expect(done.state).toBe('done');
+
+    // The dest existed going into the resume run, but since it's OUR OWN
+    // partial being resumed, the conflict resolver must not be invoked.
+    expect(conflictSpy).not.toHaveBeenCalled();
+    await expect(readText(dst, '/resume.bin')).resolves.toBe(full);
+  });
+
   it('isolates a throwing subscriber from the queue and from other listeners', async () => {
     const src = new MockFS('src');
     const dst = new MockFS('dst');

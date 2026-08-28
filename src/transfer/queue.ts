@@ -183,7 +183,7 @@ export class TransferQueue {
     try {
       let target = job.dstPath;
 
-      if (!job.isDir) {
+      if (!job.isDir && !resume) {
         let exists = true;
         try {
           await job.dst.stat(target);

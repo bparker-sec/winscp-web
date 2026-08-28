@@ -3,6 +3,15 @@ import { Modal } from './Modal';
 import { useApp } from '../state/AppProvider';
 import { diag, type DiagEvent, type LogLevel } from '../diagnostics/log';
 import { sdkProbeHost } from '../sdk/client';
+import { versionLabel } from '../buildInfo';
+
+const VAULT_LOCK_OPTIONS = [
+  { value: 5, label: '5 minutes' },
+  { value: 15, label: '15 minutes' },
+  { value: 30, label: '30 minutes' },
+  { value: 60, label: '60 minutes' },
+  { value: 0, label: 'Never' },
+];
 
 function fmtTime(ms: number): string {
   const d = new Date(ms);
@@ -44,7 +53,7 @@ function EventRow({ event }: { event: DiagEvent }) {
 type ProbeState = 'checking' | boolean;
 
 export function SettingsDialog() {
-  const { closeSettings, local, remote, userName } = useApp();
+  const { closeSettings, local, remote, userName, vaultLockMinutes, setVaultLockMinutes } = useApp();
   const [events, setEvents] = useState<DiagEvent[]>(() => diag.getEvents());
   const [hostBridge, setHostBridge] = useState<ProbeState>('checking');
   const [copied, setCopied] = useState(false);
@@ -74,6 +83,7 @@ export function SettingsDialog() {
       `Host bridge: ${hostBridgeStatus}`,
       `OneDrive: ${oneDriveStatus}`,
       `Remote: ${remoteStatus}`,
+      `Version: ${versionLabel}`,
       '',
       ...ordered.map((e) => {
         const parts = [fmtTime(e.time), e.level.toUpperCase()];
@@ -109,6 +119,29 @@ export function SettingsDialog() {
         </section>
 
         <section>
+          <h3 className="text-[12px] uppercase tracking-wide text-muted mb-1">Security</h3>
+          <div className="text-[12px] flex flex-col gap-1 border border-border rounded px-2 py-1.5">
+            <label className="flex items-center gap-2">
+              <span className="shrink-0">Auto-lock vault after</span>
+              <select
+                className="h-7 px-1 rounded border border-border bg-transparent"
+                value={vaultLockMinutes}
+                onChange={(e) => setVaultLockMinutes(Number(e.target.value))}
+              >
+                {VAULT_LOCK_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="text-muted text-[11px]">
+              How long saved-connection secrets stay unlocked after you enter the master passphrase.
+            </div>
+          </div>
+        </section>
+
+        <section>
           <div className="flex items-center gap-2 mb-1">
             <h3 className="text-[12px] uppercase tracking-wide text-muted">Event log</h3>
             <span className="text-muted text-[11px]">({events.length})</span>
@@ -138,7 +171,7 @@ export function SettingsDialog() {
           </div>
         </section>
 
-        <div className="text-[11px] text-muted">WinSCP Web</div>
+        <div className="text-[11px] text-muted">WinSCP Web — {versionLabel}</div>
 
         <div className="flex justify-end">
           <button type="button" className="h-8 px-3 rounded border border-border" onClick={closeSettings}>
