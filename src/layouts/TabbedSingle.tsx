@@ -11,6 +11,7 @@ import { ConnectDialog } from '../ui/ConnectDialog';
 import { HostKeyPrompt } from '../ui/HostKeyPrompt';
 import { ConnectionManager } from '../ui/ConnectionManager';
 import { MasterPassphraseDialog } from '../ui/MasterPassphraseDialog';
+import { ConflictDialog } from '../ui/ConflictDialog';
 
 export function TabbedSingle() {
   const {
@@ -28,8 +29,21 @@ export function TabbedSingle() {
     disconnect,
     connectionManagerOpen,
     passphraseDialog,
+    conflictPrompt,
+    localCwd,
+    remoteCwd,
+    setLocalCwd,
+    setRemoteCwd,
+    localSelection,
+    remoteSelection,
+    setLocalSelection,
+    setRemoteSelection,
+    enqueueTransfer,
   } = useApp();
   const [side, setSide] = useState<'local' | 'remote'>('local');
+
+  const uploadToRemote = () => localSelection.length && enqueueTransfer({ from: 'local', entries: localSelection, toDir: remoteCwd });
+  const downloadToLocal = () => remoteSelection.length && enqueueTransfer({ from: 'remote', entries: remoteSelection, toDir: localCwd });
 
   return (
     <div className="flex flex-col h-full">
@@ -57,26 +71,41 @@ export function TabbedSingle() {
           🖥 {remote?.label ?? 'remote'}
         </button>
       </div>
-      <Toolbar />
+      <Toolbar onUpload={uploadToRemote} onDownload={downloadToLocal} />
       <div className="flex-1 min-h-0">
         {side === 'local' ? (
           local ? (
-            <PaneView fs={local} header={local.label} />
+            <PaneView
+              fs={local}
+              header={local.label}
+              onCwdChange={setLocalCwd}
+              onSelectionChange={setLocalSelection}
+              onTransferOut={() => uploadToRemote()}
+            />
           ) : (
             <ConnectHint connecting={connecting} error={connectError} onConnect={connect} />
           )
         ) : remote ? (
-          <PaneView fs={remote} header={remote.label} initialPath={remoteHome} onDisconnect={remoteDisconnect} />
+          <PaneView
+            fs={remote}
+            header={remote.label}
+            initialPath={remoteHome}
+            onDisconnect={remoteDisconnect}
+            onCwdChange={setRemoteCwd}
+            onSelectionChange={setRemoteSelection}
+            onTransferOut={() => downloadToLocal()}
+          />
         ) : (
           <RemoteConnectHint />
         )}
       </div>
-      <TransferQueue items={[]} />
+      <TransferQueue />
       <StatusBar left={side === 'local' ? (local?.label ?? 'OneDrive') : (remote?.label ?? 'remote')} />
       {connectDialogOpen && <ConnectDialog />}
       {hostKeyPrompt && <HostKeyPrompt />}
       {connectionManagerOpen && <ConnectionManager />}
       {passphraseDialog && <MasterPassphraseDialog />}
+      {conflictPrompt && <ConflictDialog />}
     </div>
   );
 }

@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useTheme, type ThemeApi } from '../theme/useTheme';
-import type { FileSystem } from '../fs/FileSystem';
+import { joinPath, type FileSystem, type FsEntry } from '../fs/FileSystem';
 import { OneDriveFS } from '../onedrive/OneDriveFS';
 import {
   oneDriveAuth,
@@ -23,6 +23,7 @@ import { rememberHost } from '../ssh/knownhosts';
 import { Vault, type VaultState } from '../connections/vault';
 import { ConnectionStore, type SavedConnection } from '../connections/store';
 import { parseOpenSshPrivateKey } from '../ssh/privatekey';
+import { TransferQueue, type TransferJob, type ConflictChoice } from '../transfer/queue';
 
 export type ConnectDialogPrefill = Partial<
   Pick<SavedConnection, 'id' | 'name' | 'host' | 'port' | 'username' | 'authMethod' | 'alwaysPrompt'>
@@ -32,6 +33,10 @@ interface HostKeyPromptState {
   host: string;
   fingerprint: string;
   status: 'new' | 'match' | 'mismatch';
+}
+
+interface ConflictPromptState {
+  name: string;
 }
 
 interface AppState {
@@ -71,6 +76,23 @@ interface AppState {
   closePassphraseDialog: () => void;
   connectSaved: (id: string) => Promise<void>;
   openConnectDialogPrefilled: (prefill: ConnectDialogPrefill) => void;
+  // Transfers
+  jobs: TransferJob[];
+  conflictPrompt: ConflictPromptState | null;
+  resolveConflict: (choice: ConflictChoice, applyToAll: boolean) => void;
+  enqueueTransfer: (opts: { from: 'local' | 'remote'; entries: FsEntry[]; toDir: string }) => void;
+  cancelJob: (id: string) => void;
+  cancelAllJobs: () => void;
+  retryJob: (id: string) => void;
+  clearFinished: () => void;
+  localCwd: string;
+  setLocalCwd: (path: string) => void;
+  remoteCwd: string;
+  setRemoteCwd: (path: string) => void;
+  localSelection: FsEntry[];
+  setLocalSelection: (entries: FsEntry[]) => void;
+  remoteSelection: FsEntry[];
+  setRemoteSelection: (entries: FsEntry[]) => void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -389,6 +411,84 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setRemoteError(null);
   }, []);
 
+  // Transfers
+  const [jobs, setJobs] = useState<TransferJob[]>([]);
+  const [conflictPrompt, setConflictPrompt] = useState<ConflictPromptState | null>(null);
+  const conflictResolverRef = useRef<((choice: ConflictChoice) => void) | null>(null);
+  const appliedChoiceRef = useRef<ConflictChoice | null>(null);
+
+  const queue = useMemo(
+    () =>
+      new TransferQueue({
+        conflict: (job) => {
+          if (appliedChoiceRef.current) {
+            return Promise.resolve(appliedChoiceRef.current);
+          }
+          return new Promise<ConflictChoice>((resolve) => {
+            conflictResolverRef.current = resolve;
+            setConflictPrompt({ name: job.name });
+          });
+        },
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    return queue.subscribe((snapshot) => {
+      setJobs(snapshot);
+      const busy = snapshot.some((j) => j.state === 'queued' || j.state === 'active' || j.state === 'conflict');
+      if (!busy) appliedChoiceRef.current = null;
+    });
+  }, [queue]);
+
+  const resolveConflict = useCallback((choice: ConflictChoice, applyToAll: boolean) => {
+    if (applyToAll) appliedChoiceRef.current = choice;
+    setConflictPrompt(null);
+    const resolver = conflictResolverRef.current;
+    conflictResolverRef.current = null;
+    resolver?.(choice);
+  }, []);
+
+  const enqueueTransfer = useCallback(
+    (opts: { from: 'local' | 'remote'; entries: FsEntry[]; toDir: string }) => {
+      if (!local || !remote) return;
+      // A new upload/download batch starts fresh — forget any prior "apply to all" choice.
+      appliedChoiceRef.current = null;
+      const src = opts.from === 'local' ? local : remote;
+      const dst = opts.from === 'local' ? remote : local;
+      const direction = opts.from === 'local' ? 'up' : 'down';
+      for (const entry of opts.entries) {
+        queue.enqueue({
+          name: entry.name,
+          direction,
+          src,
+          srcPath: entry.path,
+          dst,
+          dstPath: joinPath(opts.toDir, entry.name),
+          size: entry.size,
+          isDir: entry.kind === 'dir',
+        });
+      }
+    },
+    [local, remote, queue],
+  );
+
+  const cancelJob = useCallback((id: string) => queue.cancel(id), [queue]);
+  const cancelAllJobs = useCallback(() => queue.cancelAll(), [queue]);
+  const retryJob = useCallback((id: string) => queue.retry(id), [queue]);
+  const clearFinished = useCallback(() => queue.clearFinished(), [queue]);
+
+  const [localCwd, setLocalCwd] = useState('/');
+  const [remoteCwd, setRemoteCwd] = useState(remoteHome);
+  const [localSelection, setLocalSelection] = useState<FsEntry[]>([]);
+  const [remoteSelection, setRemoteSelection] = useState<FsEntry[]>([]);
+
+  // Reset remote cwd to the connection's home directory whenever a new remote
+  // session is established (remoteHome changes on connect).
+  useEffect(() => {
+    setRemoteCwd(remoteHome);
+  }, [remoteHome]);
+
   const value: AppState = {
     theme,
     local,
@@ -425,6 +525,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
     closePassphraseDialog,
     connectSaved,
     openConnectDialogPrefilled,
+    jobs,
+    conflictPrompt,
+    resolveConflict,
+    enqueueTransfer,
+    cancelJob,
+    cancelAllJobs,
+    retryJob,
+    clearFinished,
+    localCwd,
+    setLocalCwd,
+    remoteCwd,
+    setRemoteCwd,
+    localSelection,
+    setLocalSelection,
+    remoteSelection,
+    setRemoteSelection,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

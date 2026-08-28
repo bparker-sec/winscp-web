@@ -1,3 +1,4 @@
+import type { FsEntry } from '../fs/FileSystem';
 import { useApp } from '../state/AppProvider';
 import { MenuBar } from '../ui/MenuBar';
 import { Toolbar } from '../ui/Toolbar';
@@ -11,6 +12,7 @@ import { ConnectDialog } from '../ui/ConnectDialog';
 import { HostKeyPrompt } from '../ui/HostKeyPrompt';
 import { ConnectionManager } from '../ui/ConnectionManager';
 import { MasterPassphraseDialog } from '../ui/MasterPassphraseDialog';
+import { ConflictDialog } from '../ui/ConflictDialog';
 
 export function Commander() {
   const {
@@ -30,7 +32,23 @@ export function Commander() {
     disconnect,
     connectionManagerOpen,
     passphraseDialog,
+    conflictPrompt,
+    localCwd,
+    remoteCwd,
+    setLocalCwd,
+    setRemoteCwd,
+    localSelection,
+    remoteSelection,
+    setLocalSelection,
+    setRemoteSelection,
+    enqueueTransfer,
   } = useApp();
+
+  const uploadToRemote = (entries: FsEntry[]) =>
+    entries.length && enqueueTransfer({ from: 'local', entries, toDir: remoteCwd });
+  const downloadToLocal = (entries: FsEntry[]) =>
+    entries.length && enqueueTransfer({ from: 'remote', entries, toDir: localCwd });
+
   return (
     <div className="flex flex-col h-full">
       <MenuBar
@@ -42,11 +60,21 @@ export function Commander() {
         onConnect={connect}
         onDisconnect={disconnect}
       />
-      <Toolbar />
+      <Toolbar
+        onUpload={() => uploadToRemote(localSelection)}
+        onDownload={() => downloadToLocal(remoteSelection)}
+      />
       <div className="flex flex-1 min-h-0">
         <div style={{ width: `${splitRatio * 100}%` }} className="min-w-0 border-r border-border">
           {local ? (
-            <PaneView fs={local} header={local.label} />
+            <PaneView
+              fs={local}
+              header={local.label}
+              onCwdChange={setLocalCwd}
+              onSelectionChange={setLocalSelection}
+              onTransferOut={uploadToRemote}
+              onDropIn={downloadToLocal}
+            />
           ) : (
             <ConnectHint connecting={connecting} error={connectError} onConnect={connect} />
           )}
@@ -54,13 +82,22 @@ export function Commander() {
         <Splitter ratio={splitRatio} onRatio={setSplitRatio} />
         <div className="flex-1 min-w-0">
           {remote ? (
-            <PaneView fs={remote} header={remote.label} initialPath={remoteHome} onDisconnect={remoteDisconnect} />
+            <PaneView
+              fs={remote}
+              header={remote.label}
+              initialPath={remoteHome}
+              onDisconnect={remoteDisconnect}
+              onCwdChange={setRemoteCwd}
+              onSelectionChange={setRemoteSelection}
+              onTransferOut={downloadToLocal}
+              onDropIn={uploadToRemote}
+            />
           ) : (
             <RemoteConnectHint />
           )}
         </div>
       </div>
-      <TransferQueue items={[]} />
+      <TransferQueue />
       <StatusBar
         left={local ? `Local: ${local.label}` : 'Local: not connected'}
         right={remote ? `Remote: ${remote.label}` : 'Remote: not connected'}
@@ -69,6 +106,7 @@ export function Commander() {
       {hostKeyPrompt && <HostKeyPrompt />}
       {connectionManagerOpen && <ConnectionManager />}
       {passphraseDialog && <MasterPassphraseDialog />}
+      {conflictPrompt && <ConflictDialog />}
     </div>
   );
 }
