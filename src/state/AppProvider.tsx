@@ -155,24 +155,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
       });
     };
 
-    const timeout = new Promise<never>((_, reject) => {
-      window.setTimeout(() => reject(new Error('Connection timed out after 30s.')), 30000);
-    });
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      setRemoteConnecting(false);
+      setRemoteError('Connection timed out after 30s.');
+      setHostKeyPrompt(null);
+      hostKeyResolverRef.current = null;
+    }, 30000);
 
-    Promise.race([connectSftp(creds, trust, `${creds.username}@${creds.host}`), timeout])
-      .then((conn) => {
+    connectSftp(creds, trust, `${creds.username}@${creds.host}`).then(
+      (conn) => {
+        window.clearTimeout(timer);
+        if (settled) {
+          // We already timed out/failed — don't leak this late-arriving session.
+          void conn.close().catch(() => {});
+          return;
+        }
+        settled = true;
         remoteConnRef.current = conn;
         setRemote(conn.fs);
         setRemoteHome(conn.home);
         setRemoteConnecting(false);
         setConnectDialogOpen(false);
-      })
-      .catch((e) => {
+      },
+      (e) => {
+        window.clearTimeout(timer);
+        if (settled) return;
+        settled = true;
         setRemoteConnecting(false);
         setRemoteError(e instanceof Error ? e.message : String(e));
         setHostKeyPrompt(null);
         hostKeyResolverRef.current = null;
-      });
+      },
+    );
   }, []);
 
   const remoteDisconnect = useCallback(() => {
