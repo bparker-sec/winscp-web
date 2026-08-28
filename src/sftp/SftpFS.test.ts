@@ -3,7 +3,7 @@ import { FsError } from '../fs/FileSystem';
 import type { FileAttrs } from './attrs';
 import { SftpError } from './SftpClient';
 import { attrsToEntry, kindFromMode, mapSftpError, SftpFS } from './SftpFS';
-import { SSH_FX_NO_SUCH_FILE, SSH_FX_PERMISSION_DENIED } from './constants';
+import { SSH_FX_FAILURE, SSH_FX_NO_SUCH_FILE, SSH_FX_PERMISSION_DENIED } from './constants';
 
 const S_IFDIR = 0o040000;
 const S_IFREG = 0o100000;
@@ -280,6 +280,26 @@ describe('SftpFS.openWrite', () => {
     expect(client.writeCalls[1].offset).toBe(4);
     expect(client.writeCalls[1].data).toEqual(chunk2);
     expect(client.closeHandleCalls).toHaveLength(1);
+  });
+});
+
+describe('SftpFS.mkdir', () => {
+  it('maps SSH_FX_FAILURE to FsError(exists) when the target stats successfully', async () => {
+    const client = new FakeSftpClient();
+    client.mkdir = vi.fn().mockRejectedValue(new SftpError(SSH_FX_FAILURE, 'failure'));
+    client.stat = vi.fn().mockResolvedValue({ permissions: S_IFDIR | 0o755 });
+    const fs = makeFS(client);
+
+    await expect(fs.mkdir('/existing')).rejects.toMatchObject({ code: 'exists' });
+  });
+
+  it('maps SSH_FX_FAILURE to FsError(io) when the target does not stat (e.g. missing parent)', async () => {
+    const client = new FakeSftpClient();
+    client.mkdir = vi.fn().mockRejectedValue(new SftpError(SSH_FX_FAILURE, 'failure'));
+    client.stat = vi.fn().mockRejectedValue(new SftpError(SSH_FX_NO_SUCH_FILE, 'no such file'));
+    const fs = makeFS(client);
+
+    await expect(fs.mkdir('/no/parent/dir')).rejects.toMatchObject({ code: 'io' });
   });
 });
 

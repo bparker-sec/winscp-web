@@ -4,7 +4,7 @@ import { FsError, joinPath, sortEntries, type FileSystem, type FsEntry, type Rea
 import type { SftpClient } from './SftpClient';
 import { SftpError } from './SftpClient';
 import type { FileAttrs } from './attrs';
-import { SSH_FX_NO_SUCH_FILE, SSH_FX_OP_UNSUPPORTED, SSH_FX_PERMISSION_DENIED, SSH_FXF_CREAT, SSH_FXF_READ, SSH_FXF_TRUNC, SSH_FXF_WRITE } from './constants';
+import { SSH_FX_FAILURE, SSH_FX_NO_SUCH_FILE, SSH_FX_OP_UNSUPPORTED, SSH_FX_PERMISSION_DENIED, SSH_FXF_CREAT, SSH_FXF_READ, SSH_FXF_TRUNC, SSH_FXF_WRITE } from './constants';
 
 const S_IFMT = 0o170000;
 const S_IFDIR = 0o040000;
@@ -98,6 +98,13 @@ export class SftpFS implements FileSystem {
     try {
       await this.client.mkdir(path, {});
     } catch (e) {
+      // SFTP servers typically return SSH_FX_FAILURE (not a dedicated code) when
+      // the target already exists. Disambiguate by stat to honor the FileSystem
+      // contract's FsError('exists').
+      if (e instanceof SftpError && e.code === SSH_FX_FAILURE) {
+        const exists = await this.client.stat(path).then(() => true).catch(() => false);
+        if (exists) throw new FsError('exists', `Already exists: ${path}`);
+      }
       throw mapSftpError(e);
     }
   }
