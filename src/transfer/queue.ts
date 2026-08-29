@@ -26,6 +26,16 @@ export interface TransferJob {
   attempted?: boolean;
   /** True once this job has been retried at least once. UI hint only. */
   retried?: boolean;
+  /** Epoch ms when the current run's byte transfer began (reset on each retry). */
+  startedAt?: number;
+  /** Epoch ms when the job reached a terminal state after actually transferring. */
+  finishedAt?: number;
+  /**
+   * job.bytes at the moment `startedAt` was set — the resume offset for this run
+   * (0 for a fresh transfer). Throughput/elapsed are measured from here so a
+   * resumed transfer's rate reflects only the bytes moved this run.
+   */
+  startBytes?: number;
 }
 
 export type ConflictChoice = 'overwrite' | 'skip' | 'rename';
@@ -237,6 +247,12 @@ export class TransferQueue {
 
       const pipelineDepth = this.pipelineDepth?.();
 
+      // Mark the start of the actual byte transfer for throughput/elapsed. Reset
+      // each run so a retry/resume measures only this run's bytes.
+      job.startedAt = Date.now();
+      job.startBytes = job.bytes;
+      job.finishedAt = undefined;
+
       if (job.isDir) {
         await transferTree(job.src, job.srcPath, job.dst, target, {
           signal: controller.signal,
@@ -260,8 +276,10 @@ export class TransferQueue {
 
       job.state = 'done';
       job.bytes = job.size ?? job.bytes;
+      job.finishedAt = Date.now();
       this.emit(true);
     } catch (err) {
+      job.finishedAt = Date.now();
       if (err instanceof TransferCancelled) {
         job.state = 'cancelled';
       } else {

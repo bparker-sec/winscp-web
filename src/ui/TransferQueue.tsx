@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useApp } from '../state/AppProvider';
 import type { TransferJob } from '../transfer/queue';
 
@@ -6,6 +7,35 @@ function fmtSize(n?: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** Bytes/second as a human rate (B/s, KB/s, MB/s). */
+function fmtRate(bytesPerSec: number): string {
+  if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return '';
+  if (bytesPerSec < 1024) return `${Math.round(bytesPerSec)} B/s`;
+  if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
+  return `${(bytesPerSec / 1024 / 1024).toFixed(1)} MB/s`;
+}
+
+/** Elapsed milliseconds as a compact clock (m:ss, or s.s for < 10s). */
+function fmtDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const secs = ms / 1000;
+  if (secs < 10) return `${secs.toFixed(1)}s`;
+  const total = Math.round(secs);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m > 0 ? `${m}:${String(s).padStart(2, '0')}` : `${s}s`;
+}
+
+/** Elapsed + average throughput for a job's current/last run, if it has run. */
+function timing(job: TransferJob, now: number): { elapsedMs: number; rate: number } | null {
+  if (job.startedAt === undefined) return null;
+  const end = job.finishedAt ?? now;
+  const elapsedMs = Math.max(0, end - job.startedAt);
+  const transferred = Math.max(0, job.bytes - (job.startBytes ?? 0));
+  const rate = elapsedMs > 0 ? transferred / (elapsedMs / 1000) : 0;
+  return { elapsedMs, rate };
 }
 
 function stateLabel(job: TransferJob): string {
@@ -28,11 +58,20 @@ function stateLabel(job: TransferJob): string {
   }
 }
 
-function Row({ job }: { job: TransferJob }) {
+function Row({ job, now }: { job: TransferJob; now: number }) {
   const { cancelJob, retryJob } = useApp();
   const pct = job.size ? Math.min(100, Math.round((job.bytes / job.size) * 100)) : undefined;
   const cancellable = job.state === 'queued' || job.state === 'active' || job.state === 'conflict';
   const retryable = job.state === 'error' || job.state === 'cancelled';
+
+  const t = timing(job, now);
+  const isActive = job.state === 'active' || job.state === 'conflict';
+  const isDone = job.state === 'done';
+  // Live rate while active; average rate once done. Elapsed shown in both.
+  const meter =
+    t && (isActive || isDone)
+      ? [isActive || isDone ? fmtRate(t.rate) : '', fmtDuration(t.elapsedMs)].filter(Boolean).join(' · ')
+      : '';
 
   return (
     <div className="py-0.5">
@@ -46,9 +85,12 @@ function Row({ job }: { job: TransferJob }) {
             </span>
           )}
         </span>
+        <span className="text-muted w-28 text-right tabular-nums truncate" title={meter}>
+          {meter}
+        </span>
         <div className="w-24 h-1.5 rounded bg-black/10 dark:bg-white/10 overflow-hidden shrink-0">
           <div
-            className={`h-full bg-accent ${pct === undefined && (job.state === 'active' || job.state === 'conflict') ? 'animate-pulse w-full' : ''}`}
+            className={`h-full bg-accent ${pct === undefined && isActive ? 'animate-pulse w-full' : ''}`}
             style={pct !== undefined ? { width: `${job.state === 'done' ? 100 : pct}%` } : undefined}
           />
         </div>
@@ -79,6 +121,17 @@ function Row({ job }: { job: TransferJob }) {
 export function TransferQueue() {
   const { jobs, cancelAllJobs, clearFinished } = useApp();
 
+  // Tick while any transfer is active so elapsed/rate advance smoothly even
+  // between progress events (a stalled-but-active transfer still updates).
+  const hasActive = jobs.some((j) => j.state === 'active' || j.state === 'conflict');
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hasActive) return;
+    const id = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(id);
+  }, [hasActive]);
+  const nowTs = hasActive ? now : Date.now();
+
   return (
     <div className="border-t border-border bg-surface px-3 py-1 text-[11px] max-h-40 overflow-auto">
       <div className="flex items-center gap-2 text-muted uppercase tracking-wide mb-0.5">
@@ -93,7 +146,7 @@ export function TransferQueue() {
       </div>
       {jobs.length === 0 && <div className="text-muted">No transfers.</div>}
       {jobs.map((job) => (
-        <Row key={job.id} job={job} />
+        <Row key={job.id} job={job} now={nowTs} />
       ))}
     </div>
   );
