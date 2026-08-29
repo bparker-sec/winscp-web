@@ -183,4 +183,47 @@ describe('ConnectDialog', () => {
       undefined,
     );
   });
+
+  it('switching protocol to S3 shows S3 fields and submits s3 creds', () => {
+    const { remoteConnect } = setup();
+    render(<ConnectDialog />);
+
+    fireEvent.change(screen.getByText(/^protocol$/i).closest('label')!.querySelector('select')!, {
+      target: { value: 's3' },
+    });
+    // SSH host field is gone; S3 fields appear.
+    expect(screen.queryByText(/^host$/i)).toBeNull();
+    fireEvent.change(screen.getByText(/^bucket$/i).closest('label')!.querySelector('input')!, {
+      target: { value: 'mybucket' },
+    });
+    fireEvent.change(screen.getByText(/access key id/i).closest('label')!.querySelector('input')!, {
+      target: { value: 'AKIA...' },
+    });
+    fireEvent.change(screen.getByText(/secret access key/i).closest('label')!.querySelector('input')!, {
+      target: { value: 'secret' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /connect$/i }));
+    expect(remoteConnect).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: 's3', bucket: 'mybucket', accessKeyId: 'AKIA...', secretAccessKey: 'secret' }),
+    );
+  });
+
+  it('switching protocol to WebDAV shows a URL field and submits webdav creds; save is hidden', () => {
+    const { remoteConnect } = setup();
+    render(<ConnectDialog />);
+
+    fireEvent.change(screen.getByText(/^protocol$/i).closest('label')!.querySelector('select')!, {
+      target: { value: 'webdav' },
+    });
+    expect(screen.queryByLabelText(/save this connection/i)).toBeNull();
+    fireEvent.change(screen.getByText(/server url/i).closest('label')!.querySelector('input')!, {
+      target: { value: 'https://dav.example.com/files/' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /connect$/i }));
+    expect(remoteConnect).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: 'webdav', url: 'https://dav.example.com/files/' }),
+    );
+  });
 });

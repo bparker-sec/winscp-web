@@ -25,7 +25,14 @@ import {
   trySilentOneDrive,
 } from '../onedrive/auth';
 import { sdkGetUser } from '../sdk/client';
-import { connectSftp, type SftpConnection, type SftpCredentials } from '../sftp/SftpConnection';
+import type { SftpCredentials } from '../sftp/SftpConnection';
+import {
+  connectRemote,
+  remoteTarget,
+  isSshProtocol,
+  type RemoteConnection,
+  type RemoteCredentials,
+} from '../remote/connect';
 import { rememberHost } from '../ssh/knownhosts';
 import { Vault, type VaultState } from '../connections/vault';
 import { ConnectionStore, type SavedConnection } from '../connections/store';
@@ -81,7 +88,7 @@ interface AppState {
   hostKeyPrompt: HostKeyPromptState | null;
   openConnectDialog: () => void;
   closeConnectDialog: () => void;
-  remoteConnect: (creds: SftpCredentials) => void;
+  remoteConnect: (creds: RemoteCredentials) => void;
   remoteDisconnect: () => void;
   /** Reconnect using the last successfully-connected credentials (session-only). */
   reconnectLast: () => void;
@@ -188,14 +195,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [connectDialogOpen, setConnectDialogOpen] = useState(false);
   const [connectDialogPrefill, setConnectDialogPrefill] = useState<ConnectDialogPrefill | null>(null);
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptState | null>(null);
-  const remoteConnRef = useRef<SftpConnection | null>(null);
+  const remoteConnRef = useRef<RemoteConnection | null>(null);
   const hostKeyResolverRef = useRef<((accept: boolean) => void) | null>(null);
   const pendingHostRef = useRef<{ host: string; port: number } | null>(null);
   // The last credentials that produced a SUCCESSFUL connect, kept only for the
   // lifetime of this session/unlocked-vault (never persisted). Used to drive
   // auto-reconnect after an unexpected connection loss, and the manual
   // "Reconnect" affordance. Cleared on an intentional disconnect.
-  const lastRemoteCredsRef = useRef<SftpCredentials | null>(null);
+  const lastRemoteCredsRef = useRef<RemoteCredentials | null>(null);
   const [canReconnect, setCanReconnect] = useState(false);
   // Counts automatic (non-user-initiated) reconnect attempts since the last
   // fully successful connect. Bounded by MAX_AUTO_RECONNECT_ATTEMPTS so a
@@ -472,7 +479,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
    * fresh connect error), and no further automatic retry is scheduled.
    */
   const performConnect = useCallback(
-    (creds: SftpCredentials, retry?: { lostReason: string }) => {
+    (creds: RemoteCredentials, retry?: { lostReason: string }) => {
       // Close any prior live connection before opening a new one, so switching
       // connections (or reconnecting) never leaves an orphaned host socket open.
       // On the auto-reconnect path the lost connection already tore itself down,
@@ -483,7 +490,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       setRemoteConnecting(true);
       if (!retry) setRemoteError(null);
-      diag.info(`Connecting to ${creds.host}:${creds.port} as ${creds.username}`);
+      diag.info(`Connecting to ${remoteTarget(creds)}`);
 
       const trust = (info: { host: string; port: number; fingerprint: string; status: 'new' | 'match' | 'mismatch' }) => {
         // A remembered host key (status 'match') auto-accepts with no prompt —
@@ -504,14 +511,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
         settled = true;
         setRemoteConnecting(false);
         setRemoteError('Connection timed out after 30s.');
-        diag.error('SFTP connect failed', { code: 'timeout', detail: 'Connection timed out after 30s.' });
+        diag.error('Connect failed', { code: 'timeout', detail: 'Connection timed out after 30s.' });
         setHostKeyPrompt(null);
         hostKeyResolverRef.current = null;
       }, 30000);
 
-      connectSftp(creds, trust, `${creds.username}@${creds.host}`, {
-        onClosed: (reason) => handleConnectionLostRef.current(reason),
+      connectRemote(creds, {
+        // Host-key trust + connection-lost/auto-reconnect apply to SSH (SFTP) only.
+        trust: isSshProtocol(creds.protocol) ? trust : undefined,
+        onClosed: isSshProtocol(creds.protocol)
+          ? (reason) => handleConnectionLostRef.current(reason)
+          : undefined,
         channelWindow: getSettings().transferWindowMB * 1024 * 1024,
+        label: remoteTarget(creds),
       }).then(
         (conn) => {
           window.clearTimeout(timer);
@@ -538,7 +550,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           settled = true;
           setRemoteConnecting(false);
           const detail = describeError(e);
-          diag.error('SFTP connect failed', { code: errorCode(e), detail });
+          diag.error('Connect failed', { code: errorCode(e), detail });
           if (retry) {
             // The auto-reconnect attempt itself failed. Auto-retries are
             // already exhausted (the counter was incremented before this
@@ -557,7 +569,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const remoteConnect = useCallback(
-    (creds: SftpCredentials) => {
+    (creds: RemoteCredentials) => {
       // A fresh, user-initiated connect always starts the auto-reconnect
       // budget over.
       reconnectAttemptsRef.current = 0;
@@ -621,19 +633,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setRemoteError('Could not decrypt the saved secret — re-enter it.');
           return;
         }
-        const creds: SftpCredentials = { host: conn.host, port: conn.port, username: conn.username };
+        const sftpCreds: SftpCredentials = { host: conn.host, port: conn.port, username: conn.username };
         if (conn.authMethod === 'key' && secret) {
           try {
             const k = parseOpenSshPrivateKey(secret);
-            creds.privateKey = { seed: k.seed, publicKey: k.publicKey };
+            sftpCreds.privateKey = { seed: k.seed, publicKey: k.publicKey };
           } catch {
             setRemoteError('Unsupported or invalid private key (encrypted keys are not yet supported).');
             return;
           }
         } else if (secret) {
-          creds.password = secret;
+          sftpCreds.password = secret;
         }
-        remoteConnect(creds);
+        // Saved connections are SFTP-only for now.
+        remoteConnect({ protocol: 'sftp', ...sftpCreds });
         return;
       }
 

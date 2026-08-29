@@ -45,7 +45,7 @@ function setupHook() {
   });
 }
 
-const creds = { host: 'example.com', port: 22, username: 'bob', password: 'hunter2' };
+const creds = { protocol: 'sftp' as const, host: 'example.com', port: 22, username: 'bob', password: 'hunter2' };
 
 describe('AppProvider remote connection state machine', () => {
   beforeEach(() => {
@@ -342,7 +342,7 @@ describe('AppProvider conflict-resolver wiring', () => {
     await waitFor(() => expect(result.current.local).not.toBeNull());
 
     act(() => {
-      result.current.remoteConnect({ host: 'example.com', port: 22, username: 'bob', password: 'x' });
+      result.current.remoteConnect({ protocol: 'sftp', host: 'example.com', port: 22, username: 'bob', password: 'x' });
     });
     await waitFor(() => expect(result.current.remote).not.toBeNull());
 
@@ -429,7 +429,7 @@ describe('AppProvider destination-pane auto-refresh on transfer completion', () 
     await waitFor(() => expect(result.current.local).not.toBeNull());
 
     act(() => {
-      result.current.remoteConnect({ host: 'example.com', port: 22, username: 'bob', password: 'x' });
+      result.current.remoteConnect({ protocol: 'sftp', host: 'example.com', port: 22, username: 'bob', password: 'x' });
     });
     await waitFor(() => expect(result.current.remote).not.toBeNull());
 
