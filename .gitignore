@@ -5,3 +5,8 @@ dist/
 *.tsbuildinfo
 *.zip
 .claude/
+
+# Playwright
+/test-results/
+/playwright-report/
+/e2e/.cache/
