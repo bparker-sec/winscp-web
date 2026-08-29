@@ -5,7 +5,7 @@ export function StatusTile() {
   return (
     <div className="widget-card flex flex-col h-full bg-surface p-2 text-[11px]">
       <div className="flex items-center gap-2 mb-1">
-        <span className="font-semibold">Skiff</span>
+        <span className="font-semibold">WebSCP</span>
         <span className="ml-auto text-muted">{remote?.label ?? 'no session'} ●</span>
       </div>
       <div className="text-muted">No active transfers.</div>

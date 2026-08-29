@@ -1,10 +1,10 @@
 {
-  "name": "skiff",
+  "name": "webscp",
   "private": true,
   "version": "1.0.0",
   "type": "module",
   "license": "GPL-3.0-or-later",
-  "description": "Skiff — a client-side PWA SFTP/FTP file-transfer client that uses OneDrive as the local side, delivered for the Island browser via the AI app host. Inspired by WinSCP; independently implemented.",
+  "description": "WebSCP — a client-side PWA SFTP/FTP file-transfer client that uses OneDrive as the local side, delivered for the Island browser via the AI app host. Inspired by WinSCP; independently implemented.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

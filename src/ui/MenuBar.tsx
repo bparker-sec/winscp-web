@@ -27,7 +27,7 @@ export function MenuBar({
   const { openConnectionManager, openSettings, canSync, openSync } = useApp();
   return (
     <div className="flex items-center gap-3 px-3 h-9 bg-surface border-b border-border select-none">
-      <span className="font-semibold">Skiff</span>
+      <span className="font-semibold">WebSCP</span>
       {!compact && <span className="text-muted">Session: {sessionLabel}</span>}
       <div className="ml-auto flex items-center gap-1">
         <AccountButton

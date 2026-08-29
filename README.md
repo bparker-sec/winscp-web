@@ -1,4 +1,4 @@
-# Skiff
+# WebSCP
 
 A client-side, browser-based file-transfer client with a familiar two-pane
 "commander" layout. The left pane is your **OneDrive**; the right pane is a
@@ -6,10 +6,10 @@ A client-side, browser-based file-transfer client with a familiar two-pane
 static PWA — there is no backend of its own; raw TCP for SSH/FTP is relayed
 through the host app's TCP proxy, and OneDrive is accessed via Microsoft Graph.
 
-> **Name:** "Skiff" is a working title. Verify trademark availability before any
+> **Name:** "WebSCP" is a working title. Verify trademark availability before any
 > public release.
 >
-> **Not affiliated with WinSCP.** Skiff is an independent, from-scratch
+> **Not affiliated with WinSCP.** WebSCP is an independent, from-scratch
 > implementation inspired by WinSCP's workflow. "WinSCP" is a trademark of its
 > respective owner and is used here only to describe the inspiration.
 
@@ -33,7 +33,7 @@ through the host app's TCP proxy, and OneDrive is accessed via Microsoft Graph.
 
 ## No warranty, no support
 
-Skiff is provided **"AS IS", without warranty of any kind** and **without any
+WebSCP is provided **"AS IS", without warranty of any kind** and **without any
 commitment to support, maintenance, or updates**. Use at your own risk. See the
 [LICENSE](./LICENSE) for the full terms.
 

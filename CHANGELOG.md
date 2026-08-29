@@ -42,7 +42,7 @@ First general-availability release. Rolls up the work below plus:
 
 ## [0.6.0]
 
-- Renamed from "WinSCP Web" to **Skiff** (working title) to remove trademark
+- Renamed from "WinSCP Web" to **WebSCP** (working title) to remove trademark
   exposure; **GPLv3** license; dark-mode dropdown fix; WebDAV/S3 removed from the
   connect UI (adapters retained).
 

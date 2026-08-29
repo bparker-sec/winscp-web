@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test';
 
-test('boots with the Skiff shell and OneDrive connect affordance', async ({ page }) => {
+test('boots with the WebSCP shell and OneDrive connect affordance', async ({ page }) => {
   await page.goto('/');
-  await expect(page).toHaveTitle('Skiff');
-  await expect(page.getByText('Skiff').first()).toBeVisible();
+  await expect(page).toHaveTitle('WebSCP');
+  await expect(page.getByText('WebSCP').first()).toBeVisible();
   await expect(page.getByRole('button', { name: /connect onedrive/i }).first()).toBeVisible();
 });
 

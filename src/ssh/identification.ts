@@ -1,7 +1,7 @@
 import type { ByteStream } from '../net/ByteStream';
 
 /** Our client identification string (RFC 4253 §4.2), sent without the trailing CRLF. */
-export const CLIENT_ID = 'SSH-2.0-Skiff_1.0';
+export const CLIENT_ID = 'SSH-2.0-WebSCP_1.0';
 
 /** Maximum non-"SSH-" preamble lines we'll tolerate before giving up (guards against a hostile/broken peer). */
 const MAX_PREAMBLE_LINES = 50;

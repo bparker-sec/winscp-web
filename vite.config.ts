@@ -48,8 +48,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
-        name: 'Skiff',
-        short_name: 'Skiff',
+        name: 'WebSCP',
+        short_name: 'WebSCP',
         description: 'SFTP / file transfer client with OneDrive as the local side.',
         theme_color: '#0f172a',
         background_color: '#0f172a',
