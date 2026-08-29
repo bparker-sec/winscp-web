@@ -547,6 +547,44 @@ describe('TransferQueue', () => {
     expect(openWriteCalls[1].resume).toBe(true);
   });
 
+  it('passes the configured pipeline depth through to the backend read/write handles', async () => {
+    const src = new MockFS('src');
+    const dst = new MockFS('dst');
+    await writeFile(src, '/f.bin', 'hello world');
+
+    const seenWriteDepth: Array<number | undefined> = [];
+    const seenReadDepth: Array<number | undefined> = [];
+    const trackedDst = wrapFs(dst, {
+      openWrite: async (path, size, opts?: { resume?: boolean; pipelineDepth?: number }) => {
+        seenWriteDepth.push(opts?.pipelineDepth);
+        return dst.openWrite(path, size, opts);
+      },
+    });
+    const trackedSrc = wrapFs(src, {
+      openRead: async (path: string, offset?: number, opts?: { pipelineDepth?: number }) => {
+        seenReadDepth.push(opts?.pipelineDepth);
+        return src.openRead(path, offset);
+      },
+    });
+
+    const queue = new TransferQueue({ pipelineDepth: () => 16 });
+    const id = queue.enqueue({
+      name: 'f.bin',
+      direction: 'up',
+      src: trackedSrc,
+      srcPath: '/f.bin',
+      dst: trackedDst,
+      dstPath: '/f.bin',
+      size: 11,
+      isDir: false,
+    });
+
+    const done = await waitForState(queue, id, TERMINAL);
+    expect(done.state).toBe('done');
+    expect(seenWriteDepth).toContain(16);
+    expect(seenReadDepth).toContain(16);
+  });
+
   it("a brand-new job's first run is fresh (resume: false), not resumed", async () => {
     const src = new MockFS('src');
     const dst = new MockFS('dst');

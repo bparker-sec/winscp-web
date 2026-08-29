@@ -24,6 +24,12 @@ export interface TransferOptions {
    * backend doesn't support it).
    */
   resume?: boolean;
+  /**
+   * How many read/write requests a pipelining backend (SFTP) may keep in flight
+   * at once. Non-pipelining backends ignore it. Undefined = backend default
+   * (serial).
+   */
+  pipelineDepth?: number;
 }
 
 // 255 KiB, not 256: it matches the SFTP layer's per-message payload cap
@@ -52,7 +58,10 @@ export async function transferFile(
   // Note: openWrite is called before openRead here (opposite of the pre-resume
   // ordering) so we know startOffset before deciding whether a reader is even
   // needed — a fully-resumed destination skips opening the source entirely.
-  const w = await dst.openWrite(dstPath, size, { resume: opts.resume });
+  const w = await dst.openWrite(dstPath, size, {
+    resume: opts.resume,
+    pipelineDepth: opts.pipelineDepth,
+  });
   const start = w.startOffset;
 
   if (size !== undefined && start >= size) {
@@ -65,7 +74,7 @@ export async function transferFile(
 
   let r;
   try {
-    r = await src.openRead(srcPath, start);
+    r = await src.openRead(srcPath, start, { pipelineDepth: opts.pipelineDepth });
   } catch (e) {
     await w.abort().catch(() => {});
     throw e;

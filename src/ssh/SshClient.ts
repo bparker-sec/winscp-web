@@ -549,12 +549,16 @@ export class SshClient {
     }
   }
 
-  async openSubsystem(name: string): Promise<SshChannel> {
+  async openSubsystem(name: string, opts?: { window?: number }): Promise<SshChannel> {
     if (this.readLoopStarted) {
       throw new Error('SshClient supports a single subsystem/channel per connection.');
     }
+    // Our advertised receive window governs how much the server may send us
+    // (downloads) before pausing for a WINDOW_ADJUST; a larger window keeps a
+    // fast/high-latency link saturated. Clamp to a sane floor.
+    const localWindow = Math.max(opts?.window ?? DEFAULT_CHANNEL_WINDOW, DEFAULT_MAX_PACKET * 4);
     const local = this.nextLocalChannel++;
-    await this.send(buildChannelOpenSession(local, DEFAULT_CHANNEL_WINDOW, DEFAULT_MAX_PACKET));
+    await this.send(buildChannelOpenSession(local, localWindow, DEFAULT_MAX_PACKET));
 
     const openPayload = await this.recvExpecting(
       (m) => m === SSH_MSG_CHANNEL_OPEN_CONFIRMATION || m === SSH_MSG_CHANNEL_OPEN_FAILURE,
@@ -570,7 +574,7 @@ export class SshClient {
       remoteChannel: confirmation.sender,
       remoteWindow: confirmation.window,
       maxPacket: confirmation.maxPacket,
-      localWindow: DEFAULT_CHANNEL_WINDOW,
+      localWindow,
     });
     this.channels.set(local, channel);
 

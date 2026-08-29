@@ -55,6 +55,12 @@ function basename(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1);
 }
 
+/** Normalize a caller-supplied pipeline depth to a sane integer >= 1 (default 1). */
+function clampDepth(depth: number | undefined): number {
+  if (typeof depth !== 'number' || !Number.isFinite(depth)) return 1;
+  return Math.max(1, Math.floor(depth));
+}
+
 export class SftpFS implements FileSystem {
   readonly kind = 'sftp' as const;
 
@@ -145,29 +151,86 @@ export class SftpFS implements FileSystem {
     }
   }
 
-  async openRead(path: string, initialOffset = 0): Promise<ReadHandle> {
+  async openRead(
+    path: string,
+    initialOffset = 0,
+    opts?: { pipelineDepth?: number },
+  ): Promise<ReadHandle> {
     try {
       const handle = await this.client.open(path, SSH_FXF_READ);
       const client = this.client;
-      let offset = initialOffset;
+      const depth = clampDepth(opts?.pipelineDepth);
+
+      // Read-ahead: keep up to `depth` READ requests in flight at successive
+      // fixed-stride offsets so a high-latency link isn't stalled one round-trip
+      // per chunk. Responses are consumed in issue order (reads are
+      // offset-addressed, so completion order is irrelevant). `reqLen` is fixed
+      // at the caller's first buffer size (the engine uses one buffer per file),
+      // capped to the SFTP message limit.
+      //
+      // Short-read safety: SFTP servers normally return exactly `reqLen` bytes
+      // until EOF, but the spec permits a short read mid-file. If one occurs, the
+      // speculative reads we already issued are at now-wrong offsets, so we
+      // discard them and resync requests to the true byte position. A null/empty
+      // read is EOF. Full reads keep the pipeline topped up.
+      let inflight: { at: number; p: Promise<Uint8Array | null> }[] = [];
+      let reqOffset = initialOffset;
+      let reqLen = 0;
+      let eof = false;
+      let leftover: Uint8Array | null = null;
+
+      const topUp = () => {
+        while (!eof && inflight.length < depth) {
+          const at = reqOffset;
+          reqOffset += reqLen;
+          inflight.push({ at, p: client.read(handle, at, reqLen) });
+        }
+      };
+
       return {
         async read(into: Uint8Array): Promise<number> {
           try {
-            // Cap the request so the server's DATA response never exceeds the
-            // SFTP message limit. Short reads are expected and handled by the
-            // caller looping until 0.
-            const want = Math.min(into.byteLength, MAX_SFTP_PAYLOAD);
-            const chunk = await client.read(handle, offset, want);
-            if (chunk === null) return 0;
+            // Serve any bytes left over from a chunk larger than a prior `into`.
+            if (leftover && leftover.length > 0) {
+              const n = Math.min(leftover.length, into.byteLength);
+              into.set(leftover.subarray(0, n));
+              leftover = n < leftover.length ? leftover.subarray(n) : null;
+              return n;
+            }
+            if (reqLen === 0) reqLen = Math.min(into.byteLength, MAX_SFTP_PAYLOAD) || MAX_SFTP_PAYLOAD;
+            topUp();
+            if (inflight.length === 0) return 0;
+            const item = inflight.shift()!;
+            const chunk = await item.p;
+            if (chunk === null || chunk.length === 0) {
+              eof = true;
+              inflight = []; // abandon any speculative reads past EOF
+              return 0;
+            }
+            if (chunk.length < reqLen) {
+              // Short read: the reads we prefetched assumed a full chunk, so
+              // their offsets are wrong. Drop them and resync to just past what
+              // we actually got; the next read re-issues from there (and returns
+              // 0 if this short read was in fact EOF).
+              inflight = [];
+              reqOffset = item.at + chunk.length;
+            } else {
+              topUp();
+            }
             const n = Math.min(chunk.length, into.byteLength);
             into.set(chunk.subarray(0, n));
-            offset += n;
+            if (n < chunk.length) leftover = chunk.subarray(n);
             return n;
           } catch (e) {
+            eof = true;
+            inflight = [];
             throw mapSftpError(e);
           }
         },
         async close(): Promise<void> {
+          // Let any in-flight reads settle so their handle references are done
+          // before we close it; ignore their results.
+          await Promise.allSettled(inflight.map((i) => i.p));
           try {
             await client.closeHandle(handle);
           } catch (e) {
@@ -180,9 +243,14 @@ export class SftpFS implements FileSystem {
     }
   }
 
-  async openWrite(path: string, _size?: number, opts?: { resume?: boolean }): Promise<WriteHandle> {
+  async openWrite(
+    path: string,
+    _size?: number,
+    opts?: { resume?: boolean; pipelineDepth?: number },
+  ): Promise<WriteHandle> {
     try {
       const client = this.client;
+      const depth = clampDepth(opts?.pipelineDepth);
       let startOffset = 0;
       let pflags = SSH_FXF_WRITE | SSH_FXF_CREAT | SSH_FXF_TRUNC;
 
@@ -204,25 +272,50 @@ export class SftpFS implements FileSystem {
 
       const handle = await client.open(path, pflags);
       let offset = startOffset;
+
+      // Pipelined writes: issue up to `depth` WRITE requests without waiting for
+      // each STATUS, so a high-latency link stays saturated instead of paying a
+      // round-trip per chunk. WRITEs are offset-addressed, so completion order
+      // doesn't matter. Backpressure: once `depth` are outstanding, wait for the
+      // oldest before accepting more. depth=1 is exactly the old serial path.
+      const inflight: Promise<void>[] = [];
+      let failure: unknown = null;
+
+      const issue = (at: number, data: Uint8Array): void => {
+        const p = client.write(handle, at, data).catch((e) => {
+          if (failure === null) failure = e;
+        });
+        inflight.push(p);
+      };
+
       return {
         startOffset,
         async write(chunk: Uint8Array): Promise<void> {
-          try {
-            // Split into sub-chunks that fit within a single SFTP message.
-            // A WRITE larger than the server's cap (OpenSSH: 256 KiB total,
-            // header included) makes sftp-server abort the whole channel, which
-            // is why large-file uploads previously died mid-transfer. This makes
-            // correctness independent of the caller's chunk size.
-            for (let pos = 0; pos < chunk.length; pos += MAX_SFTP_PAYLOAD) {
-              const slice = chunk.subarray(pos, pos + MAX_SFTP_PAYLOAD);
-              await client.write(handle, offset, slice);
-              offset += slice.length;
+          if (failure !== null) throw mapSftpError(failure);
+          // Split into sub-chunks within a single SFTP message. A WRITE larger
+          // than the server's cap (OpenSSH: 256 KiB total, header included)
+          // makes sftp-server abort the whole channel.
+          for (let pos = 0; pos < chunk.length; pos += MAX_SFTP_PAYLOAD) {
+            const slice = chunk.subarray(pos, pos + MAX_SFTP_PAYLOAD);
+            // Copy: the caller reuses its buffer as soon as write() returns, but
+            // a pipelined WRITE may not have hit the wire yet.
+            issue(offset, slice.slice());
+            offset += slice.length;
+            if (inflight.length >= depth) {
+              await inflight.shift();
+              if (failure !== null) throw mapSftpError(failure);
             }
-          } catch (e) {
-            throw mapSftpError(e);
           }
         },
         async close(): Promise<void> {
+          // Each issued write's rejection is captured into `failure` (never
+          // rejects the tracked promise), so draining can't throw here.
+          await Promise.all(inflight);
+          inflight.length = 0;
+          if (failure !== null) {
+            await client.closeHandle(handle).catch(() => {});
+            throw mapSftpError(failure);
+          }
           try {
             await client.closeHandle(handle);
           } catch (e) {
@@ -230,6 +323,8 @@ export class SftpFS implements FileSystem {
           }
         },
         async abort(): Promise<void> {
+          await Promise.allSettled(inflight);
+          inflight.length = 0;
           try {
             await client.closeHandle(handle);
           } catch {

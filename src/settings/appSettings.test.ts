@@ -32,7 +32,34 @@ describe('appSettings', () => {
 
   it('round-trips a set value', () => {
     setSettings({ vaultLockMinutes: 30 });
-    expect(getSettings()).toEqual({ vaultLockMinutes: 30 });
+    expect(getSettings()).toEqual({ ...DEFAULT_SETTINGS, vaultLockMinutes: 30 });
+  });
+
+  it('round-trips transfer-performance settings', () => {
+    setSettings({ pipelineDepth: 16, transferWindowMB: 8 });
+    const s = getSettings();
+    expect(s.pipelineDepth).toBe(16);
+    expect(s.transferWindowMB).toBe(8);
+  });
+
+  it('clamps out-of-range pipeline depth and window into their valid ranges', () => {
+    setSettings({ pipelineDepth: 9999, transferWindowMB: -5 });
+    const s = getSettings();
+    expect(s.pipelineDepth).toBe(64); // PIPELINE_DEPTH_MAX
+    expect(s.transferWindowMB).toBe(1); // TRANSFER_WINDOW_MIN_MB
+  });
+
+  it('coerces non-numeric performance values back to defaults', () => {
+    const storage = makeMemoryStorage();
+    storage.setItem(
+      'winscp-settings',
+      JSON.stringify({ vaultLockMinutes: 5, pipelineDepth: 'fast', transferWindowMB: null }),
+    );
+    _setStorageForTests(storage);
+    const s = getSettings();
+    expect(s.vaultLockMinutes).toBe(5);
+    expect(s.pipelineDepth).toBe(DEFAULT_SETTINGS.pipelineDepth);
+    expect(s.transferWindowMB).toBe(DEFAULT_SETTINGS.transferWindowMB);
   });
 
   it('merges partial updates over existing settings', () => {

@@ -31,7 +31,7 @@ export async function connectSftp(
   creds: SftpCredentials,
   trust?: TrustCallback,
   label?: string,
-  opts?: { onClosed?: (reason: string) => void },
+  opts?: { onClosed?: (reason: string) => void; channelWindow?: number },
 ): Promise<SftpConnection> {
   const { host, port, username } = creds;
 
@@ -50,7 +50,7 @@ export async function connectSftp(
     privateKey: creds.privateKey,
   });
 
-  const channel = await ssh.openSubsystem('sftp');
+  const channel = await ssh.openSubsystem('sftp', { window: opts?.channelWindow });
   const client = new SftpClient(channel);
   await client.init();
   const home = await client.realpath('.');

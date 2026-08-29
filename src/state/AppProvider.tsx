@@ -131,6 +131,11 @@ interface AppState {
   closeSettings: () => void;
   vaultLockMinutes: number;
   setVaultLockMinutes: (minutes: number) => void;
+  // Transfer performance
+  pipelineDepth: number;
+  setPipelineDepth: (depth: number) => void;
+  transferWindowMB: number;
+  setTransferWindowMB: (mb: number) => void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -194,6 +199,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [vaultLockMinutes, setVaultLockMinutesState] = useState<number>(
     () => getSettings().vaultLockMinutes,
   );
+  const [pipelineDepth, setPipelineDepthState] = useState<number>(() => getSettings().pipelineDepth);
+  const [transferWindowMB, setTransferWindowMBState] = useState<number>(
+    () => getSettings().transferWindowMB,
+  );
+
+  const setPipelineDepth = useCallback((depth: number) => {
+    setSettings({ pipelineDepth: depth });
+    // Read back the sanitized/clamped value so state matches what's persisted.
+    setPipelineDepthState(getSettings().pipelineDepth);
+  }, []);
+  const setTransferWindowMB = useCallback((mb: number) => {
+    setSettings({ transferWindowMB: mb });
+    setTransferWindowMBState(getSettings().transferWindowMB);
+  }, []);
 
   // Sliding auto-lock: any successful unlock or vault use restarts this timer.
   // If nothing touches the vault for `vaultLockMinutes` of inactivity, it locks
@@ -464,6 +483,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       connectSftp(creds, trust, `${creds.username}@${creds.host}`, {
         onClosed: (reason) => handleConnectionLostRef.current(reason),
+        channelWindow: getSettings().transferWindowMB * 1024 * 1024,
       }).then(
         (conn) => {
           window.clearTimeout(timer);
@@ -634,6 +654,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const queue = useMemo(
     () =>
       new TransferQueue({
+        pipelineDepth: () => getSettings().pipelineDepth,
         conflict: (job) =>
           new Promise<ConflictChoice>((resolve) => {
             if (appliedChoiceRef.current) {
@@ -809,6 +830,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     closeSettings,
     vaultLockMinutes,
     setVaultLockMinutes,
+    pipelineDepth,
+    setPipelineDepth,
+    transferWindowMB,
+    setTransferWindowMB,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

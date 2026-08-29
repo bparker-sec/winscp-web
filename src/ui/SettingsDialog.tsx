@@ -13,6 +13,22 @@ const VAULT_LOCK_OPTIONS = [
   { value: 0, label: 'Never' },
 ];
 
+const PIPELINE_DEPTH_OPTIONS = [
+  { value: 1, label: 'Off (one at a time)' },
+  { value: 4, label: 'Light' },
+  { value: 8, label: 'Medium' },
+  { value: 16, label: 'High' },
+  { value: 32, label: 'Very high' },
+  { value: 64, label: 'Maximum (fastest)' },
+];
+
+const TRANSFER_WINDOW_OPTIONS = [
+  { value: 2, label: 'Small (2 MB)' },
+  { value: 4, label: 'Medium (4 MB)' },
+  { value: 8, label: 'Large (8 MB)' },
+  { value: 16, label: 'Maximum (16 MB)' },
+];
+
 function fmtTime(ms: number): string {
   const d = new Date(ms);
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -53,7 +69,18 @@ function EventRow({ event }: { event: DiagEvent }) {
 type ProbeState = 'checking' | boolean;
 
 export function SettingsDialog() {
-  const { closeSettings, local, remote, userName, vaultLockMinutes, setVaultLockMinutes } = useApp();
+  const {
+    closeSettings,
+    local,
+    remote,
+    userName,
+    vaultLockMinutes,
+    setVaultLockMinutes,
+    pipelineDepth,
+    setPipelineDepth,
+    transferWindowMB,
+    setTransferWindowMB,
+  } = useApp();
   const [events, setEvents] = useState<DiagEvent[]>(() => diag.getEvents());
   const [hostBridge, setHostBridge] = useState<ProbeState>('checking');
   const [copied, setCopied] = useState(false);
@@ -137,6 +164,58 @@ export function SettingsDialog() {
             </label>
             <div className="text-muted text-[11px]">
               How long saved-connection secrets stay unlocked after you enter the master passphrase.
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h3 className="text-[12px] uppercase tracking-wide text-muted mb-1">Transfer speed</h3>
+          <div className="text-[12px] flex flex-col gap-3 border border-border rounded px-2 py-2">
+            <div className="flex flex-col gap-1">
+              <label className="flex items-center gap-2">
+                <span className="shrink-0">Send files in parallel</span>
+                <select
+                  className="h-7 px-1 rounded border border-border bg-transparent ml-auto"
+                  value={pipelineDepth}
+                  onChange={(e) => setPipelineDepth(Number(e.target.value))}
+                >
+                  {PIPELINE_DEPTH_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="text-muted text-[11px]">
+                Normally each piece of a file is sent, then the app waits for the server to confirm it
+                before sending the next — which wastes time on slow or long-distance connections. This
+                sends several pieces at once so the connection stays busy and transfers finish much
+                faster. Turn it down if your network is unreliable or you see transfer errors; “Off”
+                is the safe, one-piece-at-a-time mode. Applies to new transfers.
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className="flex items-center gap-2">
+                <span className="shrink-0">Download buffer size</span>
+                <select
+                  className="h-7 px-1 rounded border border-border bg-transparent ml-auto"
+                  value={transferWindowMB}
+                  onChange={(e) => setTransferWindowMB(Number(e.target.value))}
+                >
+                  {TRANSFER_WINDOW_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="text-muted text-[11px]">
+                How much data the server is allowed to send at once while downloading, before it pauses
+                to let the app catch up. A larger buffer keeps fast connections running at full speed;
+                a smaller one uses less memory. This affects downloads only — uploads are controlled by
+                the server. Takes effect the next time you connect.
+              </div>
             </div>
           </div>
         </section>

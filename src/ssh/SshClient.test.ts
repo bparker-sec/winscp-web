@@ -251,6 +251,28 @@ describe('SshClient.openSubsystem — early CHANNEL_WINDOW_ADJUST regression', (
     expect((chan as any).remoteWindow).toBe(2097152);
   });
 
+  it('advertises the requested receive window in CHANNEL_OPEN', async () => {
+    const openConfirmation = new SshWriter()
+      .byte(SSH_MSG_CHANNEL_OPEN_CONFIRMATION)
+      .uint32(0)
+      .uint32(0)
+      .uint32(2097152)
+      .uint32(32768)
+      .finish();
+    const subsystemSuccess = new SshWriter().byte(SSH_MSG_CHANNEL_SUCCESS).uint32(0).finish();
+    const { client, socket } = newClient([openConfirmation, subsystemSuccess]);
+
+    await client.openSubsystem('sftp', { window: 8 * 1024 * 1024 });
+
+    // CHANNEL_OPEN is the first thing openSubsystem sends.
+    const payload = decodeNoneCipherPacket(socket.sentBytes[0]);
+    const r = new SshReader(payload);
+    r.byte(); // SSH_MSG_CHANNEL_OPEN
+    r.string(); // "session"
+    r.uint32(); // sender channel
+    expect(r.uint32()).toBe(8 * 1024 * 1024); // advertised initial window
+  });
+
   it('regression guard: a write after open does not deadlock now that the grant was applied', async () => {
     const openConfirmation = new SshWriter()
       .byte(SSH_MSG_CHANNEL_OPEN_CONFIRMATION)

@@ -99,8 +99,11 @@ export interface FileSystem {
   /**
    * Open a file for streaming reads, starting at `offset` bytes into the
    * file (default 0). Throws FsError('not-a-file') on a dir.
+   *
+   * `opts.pipelineDepth`: hint for how many read requests a backend may keep in
+   * flight at once (read-ahead). Backends that don't pipeline ignore it.
    */
-  openRead(path: string, offset?: number): Promise<ReadHandle>;
+  openRead(path: string, offset?: number, opts?: { pipelineDepth?: number }): Promise<ReadHandle>;
   /**
    * Open a file for streaming writes. `size` is an optional total-length hint
    * some backends need to initiate a resumable upload; streaming backends may
@@ -111,8 +114,15 @@ export interface FileSystem {
    * handle's `startOffset` reports how many bytes were already present (0 if
    * there was nothing to resume, or resume was not requested); callers read
    * the source from `startOffset` and stream only the remaining bytes.
+   *
+   * `opts.pipelineDepth`: hint for how many write requests a backend may keep
+   * in flight at once. Backends that don't pipeline ignore it.
    */
-  openWrite(path: string, size?: number, opts?: { resume?: boolean }): Promise<WriteHandle>;
+  openWrite(
+    path: string,
+    size?: number,
+    opts?: { resume?: boolean; pipelineDepth?: number },
+  ): Promise<WriteHandle>;
   /** Set POSIX permission bits, where supported (SFTP). */
   chmod?(path: string, mode: number): Promise<void>;
 }

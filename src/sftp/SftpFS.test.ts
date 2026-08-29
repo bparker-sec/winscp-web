@@ -113,6 +113,65 @@ function makeFS(client: FakeSftpClient): SftpFS {
   return new SftpFS(client as never, 'test');
 }
 
+/**
+ * A client whose read/write requests block until explicitly released, so tests
+ * can observe how many are in flight at once (pipeline depth / backpressure).
+ */
+class GatedClient {
+  writeCalls: { offset: number; len: number }[] = [];
+  readCalls: { offset: number; length: number }[] = [];
+  closeHandleCalls = 0;
+  maxConcurrent = 0;
+  private current = 0;
+  private writeResolvers: Array<(err?: Error) => void> = [];
+  private readResolvers: Array<(v: Uint8Array | null) => void> = [];
+
+  async open(): Promise<Uint8Array> {
+    return new TextEncoder().encode('h');
+  }
+  async closeHandle(): Promise<void> {
+    this.closeHandleCalls++;
+  }
+  write(_h: Uint8Array, offset: number, data: Uint8Array): Promise<void> {
+    this.writeCalls.push({ offset, len: data.length });
+    this.current++;
+    this.maxConcurrent = Math.max(this.maxConcurrent, this.current);
+    return new Promise<void>((resolve, reject) => {
+      this.writeResolvers.push((err) => {
+        this.current--;
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+  read(_h: Uint8Array, offset: number, length: number): Promise<Uint8Array | null> {
+    this.readCalls.push({ offset, length });
+    this.current++;
+    this.maxConcurrent = Math.max(this.maxConcurrent, this.current);
+    return new Promise<Uint8Array | null>((resolve) => {
+      this.readResolvers.push((v) => {
+        this.current--;
+        resolve(v);
+      });
+    });
+  }
+  get pendingWrites(): number {
+    return this.writeResolvers.length;
+  }
+  get pendingReads(): number {
+    return this.readResolvers.length;
+  }
+  releaseWrite(err?: Error): void {
+    this.writeResolvers.shift()?.(err);
+  }
+  releaseRead(v: Uint8Array | null): void {
+    this.readResolvers.shift()?.(v);
+  }
+}
+
+/** Let queued microtasks run so awaited promises settle before assertions. */
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
 describe('kindFromMode', () => {
   it('maps dir/symlink/file/undefined', () => {
     expect(kindFromMode(S_IFDIR | 0o755)).toBe('dir');
@@ -402,6 +461,62 @@ describe('SftpFS.openWrite', () => {
     await expect(fs.openWrite('/secret.bin', undefined, { resume: true })).rejects.toMatchObject({
       code: 'permission',
     });
+  });
+});
+
+describe('SftpFS pipelining', () => {
+  it('keeps up to `pipelineDepth` writes in flight and never exceeds it (backpressure)', async () => {
+    const client = new GatedClient();
+    const fs = new SftpFS(client as never, 'test');
+    const h = await fs.openWrite('/f.bin', undefined, { pipelineDepth: 3 });
+
+    // Three small writes issue concurrently; the third call blocks on backpressure.
+    void h.write(new Uint8Array([1]));
+    void h.write(new Uint8Array([2]));
+    void h.write(new Uint8Array([3]));
+    await flush();
+
+    expect(client.pendingWrites).toBe(3);
+    expect(client.maxConcurrent).toBe(3);
+    expect(client.writeCalls.map((c) => c.offset)).toEqual([0, 1, 2]);
+
+    // Releasing one frees exactly one slot — depth is never exceeded.
+    client.releaseWrite();
+    await flush();
+    expect(client.maxConcurrent).toBe(3);
+  });
+
+  it('a pipelined write failure surfaces on close() and still closes the handle', async () => {
+    const client = new GatedClient();
+    const fs = new SftpFS(client as never, 'test');
+    const h = await fs.openWrite('/f.bin', undefined, { pipelineDepth: 4 });
+
+    void h.write(new Uint8Array([1]));
+    client.releaseWrite(new Error('disk full')); // reject the in-flight write
+    await flush();
+
+    await expect(h.close()).rejects.toBeInstanceOf(FsError);
+    expect(client.closeHandleCalls).toBe(1);
+  });
+
+  it('read-ahead issues up to `pipelineDepth` reads before the first is consumed', async () => {
+    const client = new GatedClient();
+    const fs = new SftpFS(client as never, 'test');
+    const h = await fs.openRead('/f.bin', 0, { pipelineDepth: 4 });
+
+    const buf = new Uint8Array(1000);
+    const p = h.read(buf); // triggers read-ahead
+    await flush();
+
+    expect(client.pendingReads).toBe(4);
+    expect(client.readCalls.map((c) => c.offset)).toEqual([0, 1000, 2000, 3000]);
+
+    // Deliver a full first chunk; read() returns it and tops the window back up.
+    client.releaseRead(new Uint8Array(1000));
+    expect(await p).toBe(1000);
+    await flush();
+    expect(client.pendingReads).toBe(4); // refilled (next request at 4000)
+    expect(client.readCalls[4].offset).toBe(4000);
   });
 });
 

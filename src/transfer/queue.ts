@@ -78,15 +78,22 @@ export async function uniqueName(dst: FileSystem, dir: string, name: string): Pr
 export class TransferQueue {
   private readonly concurrency: number;
   private readonly conflict: ConflictResolver;
+  private readonly pipelineDepth?: () => number;
   private jobsList: TransferJob[] = [];
   private activeCount = 0;
   private readonly controllers = new Map<string, AbortController>();
   private readonly listeners = new Set<(jobs: TransferJob[]) => void>();
   private lastProgressEmit = 0;
 
-  constructor(opts?: { concurrency?: number; conflict?: ConflictResolver }) {
+  constructor(opts?: {
+    concurrency?: number;
+    conflict?: ConflictResolver;
+    /** Read at each transfer's start so a settings change applies to new transfers. */
+    pipelineDepth?: () => number;
+  }) {
     this.concurrency = opts?.concurrency ?? 2;
     this.conflict = opts?.conflict ?? (async () => 'overwrite');
+    this.pipelineDepth = opts?.pipelineDepth;
   }
 
   enqueue(entry: EnqueueEntry): string {
@@ -228,9 +235,12 @@ export class TransferQueue {
         }
       }
 
+      const pipelineDepth = this.pipelineDepth?.();
+
       if (job.isDir) {
         await transferTree(job.src, job.srcPath, job.dst, target, {
           signal: controller.signal,
+          pipelineDepth,
           onProgress: (p) => {
             job.bytes = p.bytes;
             this.emit(false);
@@ -240,6 +250,7 @@ export class TransferQueue {
         await transferFile(job.src, job.srcPath, job.dst, target, job.size, {
           signal: controller.signal,
           resume,
+          pipelineDepth,
           onProgress: (p) => {
             job.bytes = p.bytes;
             this.emit(false);

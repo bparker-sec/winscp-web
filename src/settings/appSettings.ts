@@ -5,10 +5,35 @@
 export interface AppSettings {
   /** Minutes of inactivity before the vault auto-locks. 0 = never auto-lock. */
   vaultLockMinutes: number;
+  /**
+   * How many transfer requests are kept in flight at once per file (pipeline
+   * depth). 1 = the old one-at-a-time behavior; higher fills the link so a
+   * high-latency (WAN) connection isn't stalled waiting for each acknowledgement.
+   */
+  pipelineDepth: number;
+  /**
+   * SSH channel receive-window size, in MiB. This is how much data the server is
+   * allowed to send us (downloads) before pausing for an acknowledgement; a
+   * larger window keeps a fast/high-latency link saturated. Uploads are governed
+   * by the server's own window and are unaffected.
+   */
+  transferWindowMB: number;
 }
 
+/** Allowed range for pipeline depth (UI offers discrete steps within this). */
+export const PIPELINE_DEPTH_MIN = 1;
+export const PIPELINE_DEPTH_MAX = 64;
+/** Allowed range for the transfer window, in MiB. */
+export const TRANSFER_WINDOW_MIN_MB = 1;
+export const TRANSFER_WINDOW_MAX_MB = 32;
+
+// Defaults are tuned for maximum throughput out of the box: a deep pipeline plus
+// a large window keep even a high-latency link busy. Users on constrained or
+// flaky connections can dial both down.
 export const DEFAULT_SETTINGS: AppSettings = {
   vaultLockMinutes: 15,
+  pipelineDepth: PIPELINE_DEPTH_MAX,
+  transferWindowMB: 16,
 };
 
 const STORAGE_KEY = 'winscp-settings';
@@ -39,10 +64,29 @@ function storage(): SettingsStorage | null {
   return storageOverride ?? safeLocalStorage();
 }
 
-function isValidSettings(v: unknown): v is AppSettings {
-  if (!v || typeof v !== 'object') return false;
-  const n = (v as Record<string, unknown>).vaultLockMinutes;
-  return typeof n === 'number' && Number.isFinite(n) && n >= 0;
+/** Clamp `v` into [min, max], rounding to an integer; falls back to `fallback`. */
+function clampInt(v: unknown, min: number, max: number, fallback: number): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(v)));
+}
+
+/** Coerce an arbitrary parsed blob into a fully-valid AppSettings. */
+function sanitize(v: unknown): AppSettings {
+  const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
+  const vaultLockMinutes =
+    typeof o.vaultLockMinutes === 'number' && Number.isFinite(o.vaultLockMinutes) && o.vaultLockMinutes >= 0
+      ? o.vaultLockMinutes
+      : DEFAULT_SETTINGS.vaultLockMinutes;
+  return {
+    vaultLockMinutes,
+    pipelineDepth: clampInt(o.pipelineDepth, PIPELINE_DEPTH_MIN, PIPELINE_DEPTH_MAX, DEFAULT_SETTINGS.pipelineDepth),
+    transferWindowMB: clampInt(
+      o.transferWindowMB,
+      TRANSFER_WINDOW_MIN_MB,
+      TRANSFER_WINDOW_MAX_MB,
+      DEFAULT_SETTINGS.transferWindowMB,
+    ),
+  };
 }
 
 export function getSettings(): AppSettings {
@@ -51,9 +95,7 @@ export function getSettings(): AppSettings {
   try {
     const raw = s.getItem(STORAGE_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
-    const parsed = JSON.parse(raw);
-    if (!isValidSettings(parsed)) return { ...DEFAULT_SETTINGS };
-    return { ...DEFAULT_SETTINGS, ...parsed };
+    return sanitize(JSON.parse(raw));
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
