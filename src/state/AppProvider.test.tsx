@@ -180,6 +180,74 @@ describe('AppProvider remote connection state machine', () => {
     expect(result.current.remoteHome).toBe('/');
   });
 
+  it('opening a second connection creates a second tab; switch and close work', async () => {
+    const fsA = { label: 'A', kind: 'sftp' };
+    const fsB = { label: 'B', kind: 'sftp' };
+    const closeA = vi.fn(async () => {});
+    const closeB = vi.fn(async () => {});
+    mockConnectSftp
+      .mockResolvedValueOnce({ fs: fsA, fingerprint: 'x', home: '/a', close: closeA })
+      .mockResolvedValueOnce({ fs: fsB, fingerprint: 'x', home: '/b', close: closeB });
+
+    const { result } = setupHook();
+
+    act(() => result.current.remoteConnect(creds));
+    await waitFor(() => expect(result.current.remote).toBe(fsA));
+
+    act(() => result.current.remoteConnect({ ...creds, host: 'other.example.com' }));
+    await waitFor(() => expect(result.current.remote).toBe(fsB));
+
+    // Two tabs now; B is active, A parked.
+    expect(result.current.remoteSessions).toHaveLength(2);
+    expect(result.current.remoteSessions.find((s) => s.active)?.label).toBe('B');
+
+    // Switch back to A: its fs and home are restored.
+    const aId = result.current.remoteSessions.find((s) => s.label === 'A')!.id;
+    act(() => result.current.switchSession(aId));
+    await waitFor(() => expect(result.current.remote).toBe(fsA));
+    expect(result.current.remoteHome).toBe('/a');
+
+    // Closing the active tab (A) tears it down and activates the remaining one (B).
+    act(() => result.current.closeSession(aId));
+    expect(closeA).toHaveBeenCalled();
+    await waitFor(() => expect(result.current.remote).toBe(fsB));
+    expect(result.current.remoteSessions).toHaveLength(1);
+
+    // Closing the last tab clears the remote pane.
+    const bId = result.current.remoteSessions[0].id;
+    act(() => result.current.closeSession(bId));
+    expect(closeB).toHaveBeenCalled();
+    expect(result.current.remote).toBeNull();
+    expect(result.current.remoteSessions).toHaveLength(0);
+  });
+
+  it('a background (parked) session that drops is flagged, without disturbing the active tab', async () => {
+    const fsA = { label: 'A', kind: 'sftp' };
+    const fsB = { label: 'B', kind: 'sftp' };
+    let onClosedA: ((reason: string) => void) | undefined;
+    mockConnectSftp
+      .mockImplementationOnce(async (_c, _t, _l, opts) => {
+        onClosedA = opts?.onClosed;
+        return { fs: fsA, fingerprint: 'x', home: '/a', close: vi.fn() };
+      })
+      .mockResolvedValueOnce({ fs: fsB, fingerprint: 'x', home: '/b', close: vi.fn() });
+
+    const { result } = setupHook();
+    act(() => result.current.remoteConnect(creds));
+    await waitFor(() => expect(result.current.remote).toBe(fsA));
+    act(() => result.current.remoteConnect({ ...creds, host: 'other.example.com' }));
+    await waitFor(() => expect(result.current.remote).toBe(fsB));
+
+    // A is parked; simulate its socket dropping.
+    act(() => onClosedA?.('socket closed'));
+
+    // The active tab (B) is untouched; A's tab is flagged as dropped.
+    expect(result.current.remote).toBe(fsB);
+    await waitFor(() =>
+      expect(result.current.remoteSessions.find((s) => s.label === 'A')?.dropped).toBe(true),
+    );
+  });
+
   it('timeout-then-late-success: a connection that resolves after the timeout is closed, not stored', async () => {
     vi.useFakeTimers();
     const fakeFs = { label: 'bob@example.com' };

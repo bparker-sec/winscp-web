@@ -4,6 +4,7 @@ import { MenuBar } from '../ui/MenuBar';
 import { StatusBar } from '../ui/StatusBar';
 import { Splitter } from '../ui/Splitter';
 import { PaneView } from '../ui/PaneView';
+import { RemoteTabs } from '../ui/RemoteTabs';
 import { TransferQueue } from '../ui/TransferQueue';
 import { ConnectHint } from '../ui/ConnectHint';
 import { RemoteConnectHint } from '../ui/RemoteConnectHint';
@@ -20,7 +21,6 @@ export function Commander() {
     theme,
     local,
     remote,
-    remoteHome,
     remoteDisconnect,
     connectDialogOpen,
     hostKeyPrompt,
@@ -36,6 +36,7 @@ export function Commander() {
     conflictPrompt,
     settingsOpen,
     syncOpen,
+    activeSessionId,
     localCwd,
     remoteCwd,
     setLocalCwd,
@@ -81,20 +82,24 @@ export function Commander() {
           )}
         </div>
         <Splitter ratio={splitRatio} onRatio={setSplitRatio} />
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 flex flex-col">
+          <RemoteTabs />
           {remote ? (
-            <PaneView
-              fs={remote}
-              header={remote.label}
-              initialPath={remoteHome}
-              side="remote"
-              onDisconnect={remoteDisconnect}
-              onCwdChange={setRemoteCwd}
-              onSelectionChange={setRemoteSelection}
-              onTransferOut={downloadToLocal}
-              onDropIn={uploadToRemote}
-              refreshSignal={remoteRefreshNonce}
-            />
+            <div className="flex-1 min-h-0">
+              <PaneView
+                key={activeSessionId ?? 'remote'}
+                fs={remote}
+                header={remote.label}
+                initialPath={remoteCwd}
+                side="remote"
+                onDisconnect={remoteDisconnect}
+                onCwdChange={setRemoteCwd}
+                onSelectionChange={setRemoteSelection}
+                onTransferOut={downloadToLocal}
+                onDropIn={uploadToRemote}
+                refreshSignal={remoteRefreshNonce}
+              />
+            </div>
           ) : (
             <RemoteConnectHint />
           )}

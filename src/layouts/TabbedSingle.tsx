@@ -3,6 +3,7 @@ import { useApp } from '../state/AppProvider';
 import { MenuBar } from '../ui/MenuBar';
 import { StatusBar } from '../ui/StatusBar';
 import { PaneView } from '../ui/PaneView';
+import { RemoteTabs } from '../ui/RemoteTabs';
 import { TransferQueue } from '../ui/TransferQueue';
 import { ConnectHint } from '../ui/ConnectHint';
 import { RemoteConnectHint } from '../ui/RemoteConnectHint';
@@ -19,7 +20,7 @@ export function TabbedSingle() {
     theme,
     local,
     remote,
-    remoteHome,
+    activeSessionId,
     remoteDisconnect,
     connectDialogOpen,
     hostKeyPrompt,
@@ -91,20 +92,28 @@ export function TabbedSingle() {
           ) : (
             <ConnectHint connecting={connecting} error={connectError} onConnect={connect} />
           )
-        ) : remote ? (
-          <PaneView
-            fs={remote}
-            header={remote.label}
-            initialPath={remoteHome}
-            side="remote"
-            onDisconnect={remoteDisconnect}
-            onCwdChange={setRemoteCwd}
-            onSelectionChange={setRemoteSelection}
-            onTransferOut={() => downloadToLocal()}
-            refreshSignal={remoteRefreshNonce}
-          />
         ) : (
-          <RemoteConnectHint />
+          <div className="flex flex-col h-full min-h-0">
+            <RemoteTabs />
+            {remote ? (
+              <div className="flex-1 min-h-0">
+                <PaneView
+                  key={activeSessionId ?? 'remote'}
+                  fs={remote}
+                  header={remote.label}
+                  initialPath={remoteCwd}
+                  side="remote"
+                  onDisconnect={remoteDisconnect}
+                  onCwdChange={setRemoteCwd}
+                  onSelectionChange={setRemoteSelection}
+                  onTransferOut={() => downloadToLocal()}
+                  refreshSignal={remoteRefreshNonce}
+                />
+              </div>
+            ) : (
+              <RemoteConnectHint />
+            )}
+          </div>
         )}
       </div>
       <TransferQueue />

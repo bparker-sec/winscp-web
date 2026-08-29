@@ -90,6 +90,12 @@ interface AppState {
   closeConnectDialog: () => void;
   remoteConnect: (creds: RemoteCredentials) => void;
   remoteDisconnect: () => void;
+  // Multi-session tabs
+  remoteSessions: RemoteSessionInfo[];
+  activeSessionId: string | null;
+  switchSession: (id: string) => void;
+  closeSession: (id: string) => void;
+  openNewSession: () => void;
   /** Reconnect using the last successfully-connected credentials (session-only). */
   reconnectLast: () => void;
   /** True when there are retained credentials `reconnectLast` can use. */
@@ -173,6 +179,28 @@ export interface SyncSummary {
   actions: SyncAction[];
 }
 
+/** A remote session tab as surfaced to the UI. */
+export interface RemoteSessionInfo {
+  id: string;
+  label: string;
+  active: boolean;
+  /** True if this parked session's connection dropped while in the background. */
+  dropped: boolean;
+}
+
+/** Internal snapshot of a parked (non-active) remote session's live state. */
+interface ParkedSession {
+  id: string;
+  label: string;
+  fs: FileSystem;
+  home: string;
+  cwd: string;
+  selection: FsEntry[];
+  conn: RemoteConnection;
+  creds: RemoteCredentials | null;
+  dropped: boolean;
+}
+
 const Ctx = createContext<AppState | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
@@ -197,6 +225,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [hostKeyPrompt, setHostKeyPrompt] = useState<HostKeyPromptState | null>(null);
   const remoteConnRef = useRef<RemoteConnection | null>(null);
   const hostKeyResolverRef = useRef<((accept: boolean) => void) | null>(null);
+
+  // --- Multi-session tabs ---
+  // The single-remote state above IS the active session. Non-active sessions are
+  // "parked": their full live state is snapshotted here and swapped back into the
+  // active slots when the user switches tabs. The active-session connect/
+  // reconnect/disconnect code paths are otherwise unchanged.
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
+  const [parkedSessions, setParkedSessions] = useState<ParkedSession[]>([]);
+  const parkedSessionsRef = useRef<ParkedSession[]>([]);
+  // Kept in sync so callbacks (onClosed) read current values without stale closures.
+  parkedSessionsRef.current = parkedSessions;
+  // Stable left-to-right tab order (session ids); active + parked both live here.
+  const [sessionOrder, setSessionOrder] = useState<string[]>([]);
+  const remoteCwdRef = useRef('/');
+  const remoteSelectionRef = useRef<FsEntry[]>([]);
+  const remoteLabelRef = useRef<string>('');
+  const remoteFsRef = useRef<FileSystem | null>(null);
+  const remoteHomeRef = useRef('/');
   const pendingHostRef = useRef<{ host: string; port: number } | null>(null);
   // The last credentials that produced a SUCCESSFUL connect, kept only for the
   // lifetime of this session/unlocked-vault (never persisted). Used to drive
@@ -218,7 +265,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // a ref (rather than passed directly) because the connect call that installs
   // the callback happens inside performConnect, which is defined before
   // handleConnectionLost (which itself calls back into performConnect).
-  const handleConnectionLostRef = useRef<(reason: string) => void>(() => {});
+  const handleSessionClosedRef = useRef<(sessionId: string, reason: string) => void>(() => {});
 
   // Vault + connection store
   const vault = useMemo(() => new Vault(), []);
@@ -479,14 +526,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
    * fresh connect error), and no further automatic retry is scheduled.
    */
   const performConnect = useCallback(
-    (creds: RemoteCredentials, retry?: { lostReason: string }) => {
-      // Close any prior live connection before opening a new one, so switching
-      // connections (or reconnecting) never leaves an orphaned host socket open.
-      // On the auto-reconnect path the lost connection already tore itself down,
-      // so this ref is null and there is nothing to close.
-      const prior = remoteConnRef.current;
-      remoteConnRef.current = null;
-      if (prior) void prior.close().catch(() => {});
+    (creds: RemoteCredentials, opts?: { retry?: { lostReason: string }; sessionId?: string }) => {
+      const retry = opts?.retry;
+      // A fresh connect (no sessionId) opens a NEW tab and keeps any current
+      // session parked in the background; a reconnect reuses the dropped
+      // session's id and reinstalls it in place. Nothing is closed here — the
+      // prior active session is parked (still live) on success, or the dropped
+      // session already tore itself down.
+      const sessionId = opts?.sessionId ?? crypto.randomUUID();
+      const isNewTab = !opts?.sessionId;
 
       setRemoteConnecting(true);
       if (!retry) setRemoteError(null);
@@ -520,7 +568,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // Host-key trust + connection-lost/auto-reconnect apply to SSH (SFTP) only.
         trust: isSshProtocol(creds.protocol) ? trust : undefined,
         onClosed: isSshProtocol(creds.protocol)
-          ? (reason) => handleConnectionLostRef.current(reason)
+          ? (reason) => handleSessionClosedRef.current(sessionId, reason)
           : undefined,
         channelWindow: getSettings().transferWindowMB * 1024 * 1024,
         label: remoteTarget(creds),
@@ -533,9 +581,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
             return;
           }
           settled = true;
+
+          // New tab: park the currently-active session (still live) before we
+          // overwrite the active slots with the new connection.
+          const priorActiveId = activeSessionIdRef.current;
+          if (isNewTab && priorActiveId && remoteConnRef.current && remoteFsRef.current) {
+            const parked: ParkedSession = {
+              id: priorActiveId,
+              label: remoteLabelRef.current || priorActiveId,
+              fs: remoteFsRef.current,
+              home: remoteHomeRef.current,
+              cwd: remoteCwdRef.current,
+              selection: remoteSelectionRef.current,
+              conn: remoteConnRef.current,
+              creds: lastRemoteCredsRef.current,
+              dropped: false,
+            };
+            setParkedSessions((prev) => [...prev, parked]);
+          }
+
           remoteConnRef.current = conn;
           setRemote(conn.fs);
           setRemoteHome(conn.home);
+          setRemoteCwd(conn.home);
+          setRemoteSelection([]);
+          activeSessionIdRef.current = sessionId;
+          setActiveSessionId(sessionId);
+          setSessionOrder((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
           setRemoteConnecting(false);
           setConnectDialogOpen(false);
           setRemoteError(null);
@@ -578,8 +650,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [performConnect],
   );
 
-  const handleConnectionLost = useCallback(
-    (reason: string) => {
+  const handleSessionClosed = useCallback(
+    (sessionId: string, reason: string) => {
+      // A background (parked) session dropped: mark it so its tab shows the
+      // state and its Reconnect becomes available; leave the active session and
+      // its parked socket untouched (it already tore itself down).
+      if (sessionId !== activeSessionIdRef.current) {
+        setParkedSessions((prev) =>
+          prev.map((s) => (s.id === sessionId ? { ...s, dropped: true } : s)),
+        );
+        return;
+      }
+
+      // The ACTIVE session dropped — the existing auto-reconnect flow.
       diag.error('Connection lost', { detail: reason });
       remoteConnRef.current = null;
       setRemote(null);
@@ -594,9 +677,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (creds && reconnectAttemptsRef.current < MAX_AUTO_RECONNECT_ATTEMPTS) {
         reconnectAttemptsRef.current += 1;
         setRemoteError('Connection lost — reconnecting…');
-        // The remembered host key makes the trust callback auto-accept
-        // ('match') below, so this proceeds without a host-key prompt.
-        performConnect(creds, { lostReason: reason });
+        // Reconnect the SAME session in place (reuse its id), so the tab
+        // persists. The remembered host key auto-accepts ('match').
+        performConnect(creds, { retry: { lostReason: reason }, sessionId });
       } else {
         setRemoteError(`Connection lost: ${reason}. Select a connection to reconnect.`);
       }
@@ -605,8 +688,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    handleConnectionLostRef.current = handleConnectionLost;
-  }, [handleConnectionLost]);
+    handleSessionClosedRef.current = handleSessionClosed;
+  }, [handleSessionClosed]);
 
   const reconnectLast = useCallback(() => {
     if (lastRemoteCredsRef.current) {
@@ -667,20 +750,102 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
   connectSavedRef.current = connectSaved;
 
-  const remoteDisconnect = useCallback(() => {
-    remoteConnRef.current?.close().catch(() => {});
+  /** Install a parked session into the active slots (does not touch parkedSessions). */
+  const activateParked = useCallback((sess: ParkedSession) => {
+    remoteConnRef.current = sess.conn;
+    setRemote(sess.fs);
+    setRemoteHome(sess.home);
+    setRemoteCwd(sess.cwd);
+    setRemoteSelection(sess.selection);
+    activeSessionIdRef.current = sess.id;
+    setActiveSessionId(sess.id);
+    lastRemoteCredsRef.current = sess.creds;
+    setCanReconnect(!!sess.creds);
+    setRemoteError(sess.dropped ? 'This session disconnected — reconnect to use it.' : null);
+    reconnectAttemptsRef.current = 0;
+  }, []);
+
+  /** Clear the active slots to the "no remote" state (used when the last tab closes). */
+  const clearActive = useCallback(() => {
     remoteConnRef.current = null;
     setRemote(null);
     setRemoteHome('/');
-    setRemoteError(null);
-    // Intentional disconnect: forget the retained credentials so an
-    // unexpected close afterwards (there shouldn't be one — the connection is
-    // already torn down) never auto-reconnects, and the Reconnect affordance
-    // disappears.
+    setRemoteCwd('/');
+    setRemoteSelection([]);
+    activeSessionIdRef.current = null;
+    setActiveSessionId(null);
     lastRemoteCredsRef.current = null;
     setCanReconnect(false);
     reconnectAttemptsRef.current = 0;
   }, []);
+
+  /** Switch to a parked session tab, parking the current active one. */
+  const switchSession = useCallback(
+    (id: string) => {
+      if (id === activeSessionIdRef.current) return;
+      const target = parkedSessionsRef.current.find((s) => s.id === id);
+      if (!target) return;
+      const activeId = activeSessionIdRef.current;
+      const snapshot: ParkedSession | null =
+        activeId && remoteConnRef.current && remoteFsRef.current
+          ? {
+              id: activeId,
+              label: remoteLabelRef.current || activeId,
+              fs: remoteFsRef.current,
+              home: remoteHomeRef.current,
+              cwd: remoteCwdRef.current,
+              selection: remoteSelectionRef.current,
+              conn: remoteConnRef.current,
+              creds: lastRemoteCredsRef.current,
+              dropped: false,
+            }
+          : null;
+      setParkedSessions((prev) => {
+        const without = prev.filter((s) => s.id !== id);
+        return snapshot ? [...without, snapshot] : without;
+      });
+      activateParked(target);
+    },
+    [activateParked],
+  );
+
+  /** Close a session tab (active or parked), tearing down its connection. */
+  const closeSession = useCallback(
+    (id: string) => {
+      setSessionOrder((prev) => prev.filter((s) => s !== id));
+      if (id === activeSessionIdRef.current) {
+        remoteConnRef.current?.close().catch(() => {});
+        remoteConnRef.current = null;
+        const next = parkedSessionsRef.current[parkedSessionsRef.current.length - 1];
+        if (next) {
+          setParkedSessions((prev) => prev.filter((s) => s.id !== next.id));
+          activateParked(next);
+        } else {
+          clearActive();
+          setRemoteError(null);
+        }
+        return;
+      }
+      // Parked tab: close its socket and drop it.
+      const parked = parkedSessionsRef.current.find((s) => s.id === id);
+      parked?.conn.close().catch(() => {});
+      setParkedSessions((prev) => prev.filter((s) => s.id !== id));
+    },
+    [activateParked, clearActive],
+  );
+
+  /** Open the Connect dialog to start a new session (leaving current tabs open). */
+  const openNewSession = useCallback(() => {
+    setConnectDialogPrefill(null);
+    setConnectDialogOpen(true);
+  }, []);
+
+  // Intentional disconnect of the active tab == closing that tab.
+  const remoteDisconnect = useCallback(() => {
+    const id = activeSessionIdRef.current;
+    if (id) closeSession(id);
+    else clearActive();
+  }, [closeSession, clearActive]);
 
   // Transfers
   const [jobs, setJobs] = useState<TransferJob[]>([]);
@@ -808,11 +973,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [localSelection, setLocalSelection] = useState<FsEntry[]>([]);
   const [remoteSelection, setRemoteSelection] = useState<FsEntry[]>([]);
 
-  // Reset remote cwd to the connection's home directory whenever a new remote
-  // session is established (remoteHome changes on connect).
-  useEffect(() => {
-    setRemoteCwd(remoteHome);
-  }, [remoteHome]);
+  // Mirror the active session's live values into refs so tab park/switch and the
+  // onClosed router can snapshot them without stale closures.
+  remoteCwdRef.current = remoteCwd;
+  remoteSelectionRef.current = remoteSelection;
+  remoteLabelRef.current = remote?.label ?? '';
+  remoteFsRef.current = remote;
+  remoteHomeRef.current = remoteHome;
+  activeSessionIdRef.current = activeSessionId;
+  // Note: remoteCwd is set explicitly at each install point (connect success,
+  // tab switch, disconnect) rather than via an effect on remoteHome, so a
+  // switched-back tab keeps its own saved cwd instead of snapping to home.
 
   // --- Synchronize (directory sync/mirror between the two panes' folders) ---
   const syncRoots = useCallback(
@@ -900,6 +1071,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [syncRoots, queue],
   );
 
+  const remoteSessions: RemoteSessionInfo[] = sessionOrder.map((id) => {
+    if (id === activeSessionId) {
+      return { id, label: remote?.label ?? id, active: true, dropped: false };
+    }
+    const p = parkedSessions.find((s) => s.id === id);
+    return { id, label: p?.label ?? id, active: false, dropped: p?.dropped ?? false };
+  });
+
   const value: AppState = {
     theme,
     local,
@@ -914,6 +1093,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     closeConnectDialog,
     remoteConnect,
     remoteDisconnect,
+    remoteSessions,
+    activeSessionId,
+    switchSession,
+    closeSession,
+    openNewSession,
     reconnectLast,
     canReconnect,
     resolveHostKey,

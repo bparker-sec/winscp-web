@@ -60,6 +60,11 @@ function baseState(overrides: Partial<ReturnType<typeof useApp>> = {}) {
     setLocalSelection: vi.fn(),
     remoteSelection: [],
     setRemoteSelection: vi.fn(),
+    remoteSessions: [],
+    activeSessionId: null,
+    switchSession: vi.fn(),
+    closeSession: vi.fn(),
+    openNewSession: vi.fn(),
     ...overrides,
   };
 }
