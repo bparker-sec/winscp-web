@@ -1,7 +1,7 @@
 {
   "name": "winscp-web",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.5.1",
   "type": "module",
   "description": "WinSCP Web — a client-side PWA SFTP/file-transfer client that uses OneDrive as the local side, delivered for the Island browser via the AI app host.",
   "scripts": {

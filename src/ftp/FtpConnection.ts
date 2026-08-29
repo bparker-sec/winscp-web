@@ -7,8 +7,15 @@
 // accept inbound connections, so active mode is impossible. Plain FTP only;
 // FTPS/TLS over the raw proxy is not implemented yet.
 
-import { tcpConnect } from '../sdk/tcp';
+import { tcpConnect, type TcpConnectResult } from '../sdk/tcp';
 import { ByteStream, type RawSocket } from '../net/ByteStream';
+
+/**
+ * Opens a raw TCP connection, returning a RawSocket or a reason. Defaults to the
+ * host proxy's {@link tcpConnect}; injectable so the FTP control + passive-data
+ * connections can be driven over a real socket in dev/live verification.
+ */
+export type TcpConnectFn = (host: string, port: number) => Promise<TcpConnectResult>;
 import { base64Encode, base64Decode } from '../net/base64';
 import { FsError, type FileSystem } from '../fs/FileSystem';
 import {
@@ -125,6 +132,8 @@ export class FtpClient {
     private readonly control: ByteStream,
     readonly host: string,
     private readonly controlSock: RawSocket,
+    /** Connector for passive DATA connections (defaults to the host proxy). */
+    private readonly dataConnect: TcpConnectFn = tcpConnect,
   ) {}
 
   /** Run `fn` with exclusive use of the control (and data) channel. */
@@ -211,7 +220,7 @@ export class FtpClient {
       host = resolveDataHost(this.host, parsed.host);
       port = parsed.port;
     }
-    const result = await tcpConnect(host, port);
+    const result = await this.dataConnect(host, port);
     if (!result.ok || !result.socket) {
       throw new FsError('io', `Failed to open FTP data connection to ${host}:${port}: ${result.detail ?? 'unknown error'}`);
     }
@@ -238,20 +247,25 @@ export class FtpClient {
  * -> USER/PASS -> TYPE I -> best-effort UTF8 -> PWD (home). Returns a ready
  * FileSystem.
  */
-export async function connectFtp(creds: FtpCredentials, label?: string): Promise<FtpConnection> {
+export async function connectFtp(
+  creds: FtpCredentials,
+  label?: string,
+  opts?: { tcpConnect?: TcpConnectFn },
+): Promise<FtpConnection> {
   const { host, port, username, password } = creds;
+  const connect = opts?.tcpConnect ?? tcpConnect;
 
   if (creds.secure) {
     throw new FsError('unsupported', 'FTPS/TLS is not yet supported (plain FTP only).');
   }
 
-  const tcpResult = await tcpConnect(host, port);
+  const tcpResult = await connect(host, port);
   if (!tcpResult.ok || !tcpResult.socket) {
     throw new FsError('io', `Failed to connect to ${host}:${port}: ${tcpResult.detail ?? 'unknown error'}`);
   }
 
   const stream = new ByteStream(tcpResult.socket);
-  const client = new FtpClient(stream, host, tcpResult.socket);
+  const client = new FtpClient(stream, host, tcpResult.socket, connect);
 
   const home = await client.withLock(async () => {
     // Greeting (220). Some servers emit a multiline banner; readReply folds it.
