@@ -248,7 +248,7 @@ export function parseListLine(line: string, parentPath: string): FsEntry | null 
     /^([-dlbcps])([rwxsStT-]{9})[.+@]?\s+\d+\s+\S+\s+\S+\s+(\d+)\s+(\w{3})\s+(\d+)\s+(\S+)\s+(.+)$/.exec(trimmed);
   if (!m) return null;
   const [, typeCh, perms, sizeStr, mon, day, yearOrTime, rest] = m;
-  let kind: FsEntry['kind'] = typeCh === 'd' ? 'dir' : typeCh === 'l' ? 'symlink' : 'file';
+  const kind: FsEntry['kind'] = typeCh === 'd' ? 'dir' : typeCh === 'l' ? 'symlink' : 'file';
   let name = rest;
   if (kind === 'symlink') {
     const arrow = name.indexOf(' -> ');

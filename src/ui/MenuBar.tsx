@@ -56,6 +56,7 @@ export function MenuBar({
         <button
           className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 text-text"
           title="Settings"
+          aria-label="Settings"
           onClick={openSettings}
         >
           <IconGear />
@@ -63,6 +64,7 @@ export function MenuBar({
         <button
           className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 text-text"
           title="Toggle light/dark"
+          aria-label="Toggle light/dark theme"
           onClick={theme.toggle}
         >
           {theme.theme === 'dark' ? <IconSun /> : <IconMoon />}

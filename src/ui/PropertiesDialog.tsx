@@ -112,7 +112,7 @@ export function PropertiesDialog({ fs, entry, onClose, onApplied }: Props) {
               ))}
             </tbody>
           </table>
-          {error && <div className="text-danger text-[11px] mt-2">{error}</div>}
+          {error && <div role="alert" className="text-danger text-[11px] mt-2">{error}</div>}
           <div className="flex justify-end gap-2 mt-3">
             <button
               type="button"

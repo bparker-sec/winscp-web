@@ -10,7 +10,11 @@ export function RemoteTabs() {
   if (remoteSessions.length === 0) return null;
 
   return (
-    <div className="flex items-stretch gap-0.5 px-1 pt-1 bg-surface border-b border-border text-[12px] overflow-x-auto">
+    <div
+      role="tablist"
+      aria-label="Remote sessions"
+      className="flex items-stretch gap-0.5 px-1 pt-1 bg-surface border-b border-border text-[12px] overflow-x-auto"
+    >
       {remoteSessions.map((s) => (
         <div
           key={s.id}
@@ -34,6 +38,7 @@ export function RemoteTabs() {
             type="button"
             className="text-muted hover:text-danger px-0.5 leading-none"
             title="Close session"
+            aria-label={`Close session ${s.label}`}
             onClick={(e) => {
               e.stopPropagation();
               closeSession(s.id);
@@ -47,6 +52,7 @@ export function RemoteTabs() {
         type="button"
         className="px-2 py-1 text-muted hover:text-accent"
         title="New session"
+        aria-label="New session"
         onClick={openNewSession}
       >
         +

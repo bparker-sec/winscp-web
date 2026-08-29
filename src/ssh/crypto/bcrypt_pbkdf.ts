@@ -205,7 +205,7 @@ export function bcryptPbkdf(
   let tmpout: Uint8Array = new Uint8Array(BCRYPT_HASHSIZE);
 
   const stride = Math.floor((keylen + BCRYPT_HASHSIZE - 1) / BCRYPT_HASHSIZE);
-  let amt = Math.floor((keylen + stride - 1) / stride);
+  const amt = Math.floor((keylen + stride - 1) / stride);
 
   let count = 1;
   while (keylen > 0) {

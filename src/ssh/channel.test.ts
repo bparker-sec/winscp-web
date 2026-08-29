@@ -143,7 +143,7 @@ describe('SshChannel window accounting (outbound)', () => {
     await Promise.resolve();
 
     expect(sent.length).toBe(1);
-    let msg = parseChannelData(sent[0]);
+    const msg = parseChannelData(sent[0]);
     expect(msg.data).toEqual(payload.subarray(0, 10));
 
     // Grant more window; the writer should send the rest.

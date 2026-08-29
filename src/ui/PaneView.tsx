@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { FileSystem, FsEntry } from '../fs/FileSystem';
 import { joinPath, parentPath } from '../fs/FileSystem';
 import { describeError } from '../fs/describeError';
@@ -94,6 +94,10 @@ export function PaneView({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(0);
+  // Index (into `rows`) of the keyboard-active row, for arrow-key navigation and
+  // aria-activedescendant. -1 = nothing active yet.
+  const [activeIdx, setActiveIdx] = useState(-1);
+  const listId = useId();
 
   const reload = () => setRefreshKey((k) => k + 1);
 
@@ -122,6 +126,7 @@ export function PaneView({
   useEffect(() => {
     setSelected(new Set());
     lastAnchorRef.current = null;
+    setActiveIdx(-1);
   }, [cwd, fs]);
 
   useEffect(() => {
@@ -166,7 +171,56 @@ export function PaneView({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [onTransferOut, selectedEntries, rows]);
 
+  // Ensure the row at `idx` is within the scroll viewport (used by keyboard nav,
+  // which must scroll the active row into view since the list is windowed).
+  const scrollRowIntoView = (idx: number) => {
+    const el = scrollRef.current;
+    if (!el || !el.clientHeight) return;
+    const top = idx * ROW_H;
+    const bottom = top + ROW_H;
+    if (top < el.scrollTop) el.scrollTop = top;
+    else if (bottom > el.scrollTop + el.clientHeight) el.scrollTop = bottom - el.clientHeight;
+  };
+
+  const moveActive = (delta: number) => {
+    if (rows.length === 0) return;
+    setActiveIdx((prev) => {
+      const start = prev < 0 ? (delta > 0 ? -1 : rows.length) : prev;
+      const next = Math.max(0, Math.min(rows.length - 1, start + delta));
+      const row = rows[next];
+      if (row) {
+        setSelected(new Set([row.path]));
+        lastAnchorRef.current = row.path;
+        scrollRowIntoView(next);
+      }
+      return next;
+    });
+  };
+
+  const onListKeyDown = (evt: React.KeyboardEvent) => {
+    if (evt.key === 'ArrowDown') {
+      evt.preventDefault();
+      moveActive(1);
+    } else if (evt.key === 'ArrowUp') {
+      evt.preventDefault();
+      moveActive(-1);
+    } else if (evt.key === 'Home') {
+      evt.preventDefault();
+      moveActive(-rows.length);
+    } else if (evt.key === 'End') {
+      evt.preventDefault();
+      moveActive(rows.length);
+    } else if (evt.key === 'Enter') {
+      const row = activeIdx >= 0 ? rows[activeIdx] : undefined;
+      if (row?.kind === 'dir') {
+        evt.preventDefault();
+        setCwd(row.path);
+      }
+    }
+  };
+
   const selectRow = (e: FsEntry, evt: React.MouseEvent) => {
+    setActiveIdx(rows.findIndex((r) => r.path === e.path));
     if (evt.shiftKey && lastAnchorRef.current) {
       const anchorIdx = rows.findIndex((r) => r.path === lastAnchorRef.current);
       const targetIdx = rows.findIndex((r) => r.path === e.path);
@@ -383,7 +437,7 @@ export function PaneView({
         </button>
       </div>
       {actionError && (
-        <div className="px-2 py-1 text-[11px] text-danger border-b border-border">{actionError}</div>
+        <div role="alert" className="px-2 py-1 text-[11px] text-danger border-b border-border">{actionError}</div>
       )}
       <div className="grid grid-cols-[1fr_80px_130px] px-2 py-1 text-[11px] text-muted border-b border-border">
         <button className="text-left" onClick={() => setSortKey('name')}>Name</button>
@@ -392,16 +446,25 @@ export function PaneView({
       </div>
       <div
         ref={scrollRef}
-        className="flex-1 min-h-0 overflow-auto font-mono text-[12px]"
+        role="listbox"
+        aria-label={`${header} file list`}
+        aria-activedescendant={activeIdx >= 0 ? `${listId}-opt-${activeIdx}` : undefined}
+        tabIndex={0}
+        className="flex-1 min-h-0 overflow-auto font-mono text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-accent"
         onScroll={(evt) => setScrollTop(evt.currentTarget.scrollTop)}
+        onKeyDown={onListKeyDown}
       >
-        {error && <div className="px-2 py-2 text-danger">{error}</div>}
+        {error && <div role="alert" className="px-2 py-2 text-danger">{error}</div>}
         <div style={{ paddingTop: padTop, paddingBottom: padBottom }}>
-          {visibleRows.map((e) => {
+          {visibleRows.map((e, i) => {
+            const idx = startIdx + i;
             const isSel = selected.has(e.path);
             return (
               <div
                 key={e.path}
+                id={`${listId}-opt-${idx}`}
+                role="option"
+                aria-selected={isSel}
                 draggable
                 className={`grid grid-cols-[1fr_80px_130px] px-2 py-0.5 cursor-default border-l-2 ${
                   isSel

@@ -139,7 +139,7 @@ export function SyncDialog() {
           <span>Also re-copy when the source file is newer (not just a different size)</span>
         </label>
 
-        {error && <div className="text-danger text-[12px] break-words">{error}</div>}
+        {error && <div role="alert" className="text-danger text-[12px] break-words">{error}</div>}
 
         {summary && !done && (
           <div className="border border-border rounded px-2 py-1.5 text-[12px]">

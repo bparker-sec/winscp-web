@@ -77,7 +77,7 @@ function Row({ job, now }: { job: TransferJob; now: number }) {
   return (
     <div className="py-0.5">
       <div className="flex items-center gap-2">
-        <span>{job.direction === 'up' ? '⬆' : '⬇'}</span>
+        <span aria-hidden="true">{job.direction === 'up' ? '⬆' : '⬇'}</span>
         <span className="truncate flex-1" title={job.name}>
           {job.name}
           {job.retried && (job.state === 'active' || job.state === 'conflict' || job.state === 'done') && (
@@ -96,7 +96,7 @@ function Row({ job, now }: { job: TransferJob; now: number }) {
         </span>
         <div className="w-24 h-1.5 rounded bg-black/10 dark:bg-white/10 overflow-hidden shrink-0">
           <div
-            className={`h-full bg-accent ${pct === undefined && isActive ? 'animate-pulse w-full' : ''}`}
+            className={`h-full bg-accent ${pct === undefined && isActive ? 'motion-safe:animate-pulse w-full' : ''}`}
             style={pct !== undefined ? { width: `${job.state === 'done' ? 100 : pct}%` } : undefined}
           />
         </div>
@@ -138,11 +138,23 @@ export function TransferQueue() {
   }, [hasActive]);
   const nowTs = hasActive ? now : Date.now();
 
+  const activeCount = jobs.filter((j) => j.state === 'active' || j.state === 'conflict').length;
+  const doneCount = jobs.filter((j) => j.state === 'done').length;
+
   return (
-    <div className="border-t border-border bg-surface px-3 py-1 text-[11px] max-h-40 overflow-auto">
+    <div
+      className="border-t border-border bg-surface px-3 py-1 text-[11px] max-h-40 overflow-auto"
+      role="region"
+      aria-label="Transfer queue"
+    >
       <div className="flex items-center gap-2 text-muted uppercase tracking-wide mb-0.5">
         <span>Transfer queue</span>
         <span>({jobs.length})</span>
+        <span role="status" aria-live="polite" className="sr-only">
+          {jobs.length === 0
+            ? 'Transfer queue empty'
+            : `${jobs.length} transfer${jobs.length === 1 ? '' : 's'}, ${activeCount} active, ${doneCount} complete`}
+        </span>
         <button className="ml-auto normal-case hover:text-accent" onClick={clearFinished}>
           Clear finished
         </button>
