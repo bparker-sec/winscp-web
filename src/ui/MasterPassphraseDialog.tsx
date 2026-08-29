@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { Modal } from './Modal';
 import { useApp } from '../state/AppProvider';
 
+const MIN_PASSPHRASE_LENGTH = 8;
+
 export function MasterPassphraseDialog() {
   const { passphraseDialog, setMasterPassphrase, unlockVault, closePassphraseDialog } = useApp();
   const [passphrase, setPassphrase] = useState('');
@@ -17,6 +19,13 @@ export function MasterPassphraseDialog() {
     setError(null);
 
     if (mode === 'set') {
+      // The whole at-rest model (saved passwords AND decrypted SSH keys) reduces
+      // to this passphrase's strength against an offline attacker, so require a
+      // meaningful minimum. Reject empty/short.
+      if (passphrase.length < MIN_PASSPHRASE_LENGTH) {
+        setError(`Use at least ${MIN_PASSPHRASE_LENGTH} characters for the master passphrase.`);
+        return;
+      }
       if (passphrase !== confirm) {
         setError('Passphrases do not match.');
         return;
@@ -74,6 +83,7 @@ export function MasterPassphraseDialog() {
 
         <div className="text-muted text-[11px]">
           Protects saved secrets at rest in this browser.
+          {mode === 'set' && ` Use a strong passphrase of at least ${MIN_PASSPHRASE_LENGTH} characters.`}
         </div>
 
         {error && (

@@ -3,11 +3,30 @@
 All notable changes to this project are documented here. Versions follow
 semantic-ish versioning during the pre-1.0 build-out.
 
-## [Unreleased]
+## [1.0.0] — GA
 
-- Accessibility pass (ARIA roles, focus management, screen-reader labels).
-- CI (GitHub Actions), ESLint + Prettier, GPLv3 license, browser end-to-end
-  smoke test — targeting a 1.0 release.
+First general-availability release. Rolls up the work below plus:
+
+- **Accessibility:** Modal focus trap + restore, `role=dialog`/`aria-modal`,
+  file-list `listbox`/`option` semantics with keyboard navigation, ARIA labels on
+  icon buttons, polite live regions, and reduced-motion support.
+- **Engineering:** GitHub Actions CI (typecheck → lint → test → build → e2e),
+  ESLint (flat config) + Prettier, a Playwright browser smoke suite, GPLv3
+  license, README, and this changelog.
+- **Security hardening** (from a pre-GA review):
+  - Master-passphrase minimum length enforced (no empty passphrases); PBKDF2
+    raised to 600k iterations (per-vault, so existing vaults are unaffected).
+  - SSH host-key trust now **rejects** by default when no trust callback is
+    supplied (never silently accepts an unknown key); the changed-key hard-fail
+    invariant is documented so it can't be refactored away.
+  - FTPS TLS now verifies the certificate **hostname** (CN/SAN) on the secure
+    path. Plain FTP shows a clear cleartext warning.
+  - Verified: production dependencies have 0 known vulnerabilities.
+
+> Known limitation: WebDAV, S3, and FTPS are implemented and (SFTP/FTP/FTPS)
+> live-verified, but only SFTP and FTP are exposed in the connect UI. Exposing
+> FTPS needs a certificate-trust model (CA store or persistent cert-TOFU);
+> WebDAV/S3 need the browser CORS/mixed-content story resolved. Post-1.0.
 
 ## [0.7.0]
 

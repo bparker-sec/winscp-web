@@ -40,8 +40,8 @@ describe('MasterPassphraseDialog', () => {
     const { setMasterPassphrase } = setup({ passphraseDialog: { mode: 'set' } });
     render(<MasterPassphraseDialog />);
 
-    fireEvent.change(passInput(), { target: { value: 'abc123' } });
-    fireEvent.change(confirmInput(), { target: { value: 'different' } });
+    fireEvent.change(passInput(), { target: { value: 'longenough1' } });
+    fireEvent.change(confirmInput(), { target: { value: 'differentpass' } });
     fireEvent.click(screen.getByRole('button', { name: /set passphrase/i }));
 
     expect(await screen.findByRole('alert')).toBeTruthy();
@@ -49,17 +49,29 @@ describe('MasterPassphraseDialog', () => {
     expect(setMasterPassphrase).not.toHaveBeenCalled();
   });
 
-  it('set mode: matching passphrases calls setMasterPassphrase', async () => {
+  it('set mode: rejects a too-short passphrase before calling setMasterPassphrase', async () => {
     const { setMasterPassphrase } = setup({ passphraseDialog: { mode: 'set' } });
     render(<MasterPassphraseDialog />);
 
-    fireEvent.change(passInput(), { target: { value: 'abc123' } });
-    fireEvent.change(confirmInput(), { target: { value: 'abc123' } });
+    fireEvent.change(passInput(), { target: { value: 'short' } });
+    fireEvent.change(confirmInput(), { target: { value: 'short' } });
+    fireEvent.click(screen.getByRole('button', { name: /set passphrase/i }));
+
+    expect(screen.getByRole('alert').textContent).toMatch(/at least 8 characters/i);
+    expect(setMasterPassphrase).not.toHaveBeenCalled();
+  });
+
+  it('set mode: matching passphrases (>= 8 chars) calls setMasterPassphrase', async () => {
+    const { setMasterPassphrase } = setup({ passphraseDialog: { mode: 'set' } });
+    render(<MasterPassphraseDialog />);
+
+    fireEvent.change(passInput(), { target: { value: 'correct horse' } });
+    fireEvent.change(confirmInput(), { target: { value: 'correct horse' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /set passphrase/i }));
     });
 
-    expect(setMasterPassphrase).toHaveBeenCalledWith('abc123');
+    expect(setMasterPassphrase).toHaveBeenCalledWith('correct horse');
   });
 
   it('unlock mode: shows "Incorrect passphrase" when unlockVault resolves false', async () => {

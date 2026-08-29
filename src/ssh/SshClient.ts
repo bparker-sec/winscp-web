@@ -488,12 +488,19 @@ export class SshClient {
       throw new Error('SSH host-key signature verification failed.');
     }
     const check = checkHostKey(this.host, this.port, kServer);
+    // A CHANGED host key hard-fails HERE, before the trust callback ever runs —
+    // this invariant is what stops auto-reconnect (which passes a callback that
+    // auto-accepts 'match') from being tricked into re-pinning a swapped key.
+    // Do NOT move host-key acceptance ahead of this check.
     if (check.status === 'mismatch') {
       throw new Error(
         `SSH host key for ${this.host}:${this.port} has changed! Expected fingerprint ${check.known}, got ${check.fingerprint}. Possible man-in-the-middle attack.`,
       );
     }
-    const accepted = trust ? await trust({ host: this.host, port: this.port, fingerprint: check.fingerprint, status: check.status }) : true;
+    // No trust callback ⇒ REJECT (never silently accept an unknown host key).
+    const accepted = trust
+      ? await trust({ host: this.host, port: this.port, fingerprint: check.fingerprint, status: check.status })
+      : false;
     if (!accepted) {
       throw new Error(`SSH host key for ${this.host}:${this.port} was not trusted by the caller.`);
     }

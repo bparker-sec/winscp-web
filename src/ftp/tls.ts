@@ -63,6 +63,41 @@ export function bytesToBinaryString(bytes: Uint8Array): string {
   return out;
 }
 
+/** RFC 6125-ish match of one cert name (CN or DNS/IP SAN) against a host. */
+export function matchesHostname(pattern: string, host: string): boolean {
+  if (!pattern) return false;
+  const p = pattern.toLowerCase();
+  const h = host.toLowerCase();
+  if (p === h) return true;
+  // Single leftmost-label wildcard: *.example.com matches a.example.com (one label).
+  if (p.startsWith('*.')) {
+    const suffix = p.slice(1); // ".example.com"
+    return h.endsWith(suffix) && h.slice(0, h.length - suffix.length).indexOf('.') === -1;
+  }
+  return false;
+}
+
+/**
+ * Does the leaf certificate identify `host`? Checks subjectAltName DNS/IP
+ * entries first (per RFC 6125), then falls back to the subject CN. `cert` is a
+ * forge x509 certificate object.
+ */
+export function certMatchesHost(cert: unknown, host: string): boolean {
+  const c = cert as {
+    subject?: { getField?: (name: string) => { value?: string } | null };
+    getExtension?: (name: string) => { altNames?: Array<{ type?: number; value?: string }> } | undefined;
+  } | null;
+  if (!c) return false;
+  const names: string[] = [];
+  const san = c.getExtension?.('subjectAltName');
+  if (san?.altNames) {
+    for (const alt of san.altNames) if (alt.value) names.push(alt.value);
+  }
+  const cn = c.subject?.getField?.('CN')?.value;
+  if (cn) names.push(cn);
+  return names.some((n) => matchesHostname(n, host));
+}
+
 /**
  * Run a TLS client handshake over `inner` and return a new RawSocket whose
  * send()/receive() transparently encrypt/decrypt through the TLS session. The
@@ -88,11 +123,25 @@ export async function upgradeToTls(inner: RawSocket, opts: UpgradeTlsOptions): P
   const conn = forge.tls.createConnection({
     server: false,
     virtualHost: opts.host,
-    verify: (_conn, verified, _depth, _certs) => {
+    verify: (_conn, verified, _depth, certs) => {
       const certOk = verified === true;
+      // Explicit "accept anything" — opt-in per host for self-signed certs on a
+      // trusted network. The MITM tradeoff is documented above; the caller chose
+      // it, so skip both chain and hostname checks.
+      if (rejectUnauthorized === false) return true;
       if (opts.verify) return opts.verify(certOk) ? true : verified;
-      if (rejectUnauthorized === false) return true; // accept anything -- see MITM note above
-      return verified; // pass forge's own verdict through (true, or a failure object)
+      // Secure default: require forge's chain verdict AND that the leaf cert was
+      // actually issued for this host (forge does not check the hostname itself).
+      if (verified !== true) return verified;
+      if (!certMatchesHost(certs && certs[0], opts.host)) {
+        tlsError = new Error(
+          `FTPS certificate hostname mismatch: not valid for ${opts.host}.`,
+        );
+        // Returning a non-true value fails the handshake with a bad_certificate
+        // alert; cast because @types/node-forge narrows the callback return.
+        return forge.tls.Alert.Description.bad_certificate as unknown as typeof verified;
+      }
+      return true;
     },
     connected: () => {
       handshakeDone = true;

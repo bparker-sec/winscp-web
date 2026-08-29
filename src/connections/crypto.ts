@@ -1,5 +1,8 @@
 // WebCrypto helpers for the encrypted connection vault (PBKDF2 -> AES-GCM).
-export const PBKDF2_ITERATIONS = 210_000;
+// 600k SHA-256 iterations tracks current OWASP guidance. The count is stored
+// per-vault (see Vault meta), so raising it only affects newly created vaults;
+// existing vaults keep unlocking with their own stored iteration count.
+export const PBKDF2_ITERATIONS = 600_000;
 
 export function randomSalt(): Uint8Array {
   const salt = new Uint8Array(16);

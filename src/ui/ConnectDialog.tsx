@@ -146,6 +146,13 @@ export function ConnectDialog() {
           </select>
         </label>
 
+        {protocol === 'ftp' && (
+          <div role="note" className="text-[11px] text-amber-600 dark:text-amber-400">
+            ⚠ Plain FTP sends your username, password, and files <b>unencrypted</b>. Only use it on a
+            trusted network; prefer SFTP where possible.
+          </div>
+        )}
+
         <label className="flex flex-col gap-1 text-[13px]">
           Host
           <input className={field} value={host} onChange={(e) => setHost(e.target.value)} required />
