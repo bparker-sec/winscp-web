@@ -24,7 +24,7 @@ export function MenuBar({
   onConnect,
   onDisconnect,
 }: Props) {
-  const { openConnectionManager, openSettings } = useApp();
+  const { openConnectionManager, openSettings, canSync, openSync } = useApp();
   return (
     <div className="flex items-center gap-3 px-3 h-9 bg-surface border-b border-border select-none">
       <span className="font-semibold">WinSCP Web</span>
@@ -37,6 +37,15 @@ export function MenuBar({
           onConnect={onConnect}
           onDisconnect={onDisconnect}
         />
+        {canSync && (
+          <button
+            className="h-7 px-2 rounded hover:bg-black/5 dark:hover:bg-white/10 text-text text-[13px]"
+            title="Synchronize the two folders"
+            onClick={openSync}
+          >
+            Synchronize
+          </button>
+        )}
         <button
           className="h-7 px-2 rounded hover:bg-black/5 dark:hover:bg-white/10 text-text text-[13px]"
           title="Saved connections"

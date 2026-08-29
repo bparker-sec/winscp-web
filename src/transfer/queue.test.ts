@@ -547,6 +547,32 @@ describe('TransferQueue', () => {
     expect(openWriteCalls[1].resume).toBe(true);
   });
 
+  it('overwrite:true skips the conflict prompt and replaces the existing destination', async () => {
+    const src = new MockFS('src');
+    const dst = new MockFS('dst');
+    await writeFile(src, '/f.txt', 'new contents');
+    await writeFile(dst, '/f.txt', 'old contents'); // already exists at destination
+
+    const conflictSpy = vi.fn(async () => 'skip' as ConflictChoice);
+    const queue = new TransferQueue({ conflict: conflictSpy });
+    const id = queue.enqueue({
+      name: 'f.txt',
+      direction: 'up',
+      src,
+      srcPath: '/f.txt',
+      dst,
+      dstPath: '/f.txt',
+      size: 12,
+      isDir: false,
+      overwrite: true,
+    });
+
+    const done = await waitForState(queue, id, TERMINAL);
+    expect(done.state).toBe('done');
+    expect(conflictSpy).not.toHaveBeenCalled();
+    await expect(readText(dst, '/f.txt')).resolves.toBe('new contents');
+  });
+
   it('passes the configured pipeline depth through to the backend read/write handles', async () => {
     const src = new MockFS('src');
     const dst = new MockFS('dst');

@@ -13,6 +13,7 @@ import { ConnectionManager } from '../ui/ConnectionManager';
 import { MasterPassphraseDialog } from '../ui/MasterPassphraseDialog';
 import { ConflictDialog } from '../ui/ConflictDialog';
 import { SettingsDialog } from '../ui/SettingsDialog';
+import { SyncDialog } from '../ui/SyncDialog';
 
 export function Commander() {
   const {
@@ -34,6 +35,7 @@ export function Commander() {
     passphraseDialog,
     conflictPrompt,
     settingsOpen,
+    syncOpen,
     localCwd,
     remoteCwd,
     setLocalCwd,
@@ -109,6 +111,7 @@ export function Commander() {
       {passphraseDialog && <MasterPassphraseDialog />}
       {conflictPrompt && <ConflictDialog />}
       {settingsOpen && <SettingsDialog />}
+      {syncOpen && <SyncDialog />}
     </div>
   );
 }

@@ -9,7 +9,14 @@ import {
   type ReactNode,
 } from 'react';
 import { useTheme, type ThemeApi } from '../theme/useTheme';
-import { joinPath, type FileSystem, type FsEntry } from '../fs/FileSystem';
+import { FsError, joinPath, type FileSystem, type FsEntry } from '../fs/FileSystem';
+import {
+  computeSyncPlan,
+  planTotalBytes,
+  type SyncAction,
+  type SyncMode,
+  type CompareBy,
+} from '../transfer/sync';
 import { OneDriveFS } from '../onedrive/OneDriveFS';
 import {
   oneDriveAuth,
@@ -108,6 +115,13 @@ interface AppState {
   conflictPrompt: ConflictPromptState | null;
   resolveConflict: (choice: ConflictChoice, applyToAll: boolean) => void;
   enqueueTransfer: (opts: { from: 'local' | 'remote'; entries: FsEntry[]; toDir: string }) => void;
+  // Synchronize (directory sync/mirror between the two panes' current folders)
+  canSync: boolean;
+  syncOpen: boolean;
+  openSync: () => void;
+  closeSync: () => void;
+  previewSync: (req: SyncRequest) => Promise<SyncSummary>;
+  applySync: (req: SyncRequest) => Promise<void>;
   cancelJob: (id: string) => void;
   cancelAllJobs: () => void;
   retryJob: (id: string) => void;
@@ -136,6 +150,20 @@ interface AppState {
   setPipelineDepth: (depth: number) => void;
   transferWindowMB: number;
   setTransferWindowMB: (mb: number) => void;
+}
+
+/** A synchronize request: which pane is the source of truth, and the compare rules. */
+export interface SyncRequest {
+  from: 'local' | 'remote';
+  mode: SyncMode;
+  compareBy: CompareBy;
+}
+export interface SyncSummary {
+  copy: number;
+  mkdir: number;
+  del: number;
+  bytes: number;
+  actions: SyncAction[];
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -749,6 +777,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [local, remote, queue],
   );
 
+  const [syncOpen, setSyncOpen] = useState(false);
+  const openSync = useCallback(() => setSyncOpen(true), []);
+  const closeSync = useCallback(() => setSyncOpen(false), []);
+
   const cancelJob = useCallback((id: string) => queue.cancel(id), [queue]);
   const cancelAllJobs = useCallback(() => queue.cancelAll(), [queue]);
   const retryJob = useCallback((id: string) => queue.retry(id), [queue]);
@@ -768,6 +800,92 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setRemoteCwd(remoteHome);
   }, [remoteHome]);
+
+  // --- Synchronize (directory sync/mirror between the two panes' folders) ---
+  const syncRoots = useCallback(
+    (from: 'local' | 'remote') => {
+      const src = from === 'local' ? local : remote;
+      const dst = from === 'local' ? remote : local;
+      const srcRoot = from === 'local' ? localCwd : remoteCwd;
+      const dstRoot = from === 'local' ? remoteCwd : localCwd;
+      return { src, dst, srcRoot, dstRoot };
+    },
+    [local, remote, localCwd, remoteCwd],
+  );
+
+  const previewSync = useCallback(
+    async (req: SyncRequest): Promise<SyncSummary> => {
+      const { src, dst, srcRoot, dstRoot } = syncRoots(req.from);
+      if (!src || !dst) return { copy: 0, mkdir: 0, del: 0, bytes: 0, actions: [] };
+      const actions = await computeSyncPlan(src, srcRoot, dst, dstRoot, {
+        mode: req.mode,
+        compareBy: req.compareBy,
+      });
+      return {
+        actions,
+        copy: actions.filter((a) => a.kind === 'copy').length,
+        mkdir: actions.filter((a) => a.kind === 'mkdir').length,
+        del: actions.filter((a) => a.kind === 'delete').length,
+        bytes: planTotalBytes(actions),
+      };
+    },
+    [syncRoots],
+  );
+
+  const applySync = useCallback(
+    async (req: SyncRequest): Promise<void> => {
+      const { src, dst, srcRoot, dstRoot } = syncRoots(req.from);
+      if (!src || !dst) return;
+      const direction = req.from === 'local' ? 'up' : 'down';
+
+      // Ensure the destination root exists before creating anything under it.
+      try {
+        await dst.mkdir(dstRoot);
+      } catch (e) {
+        if (!(e instanceof FsError && e.code === 'exists')) throw e;
+      }
+
+      const actions = await computeSyncPlan(src, srcRoot, dst, dstRoot, {
+        mode: req.mode,
+        compareBy: req.compareBy,
+      });
+
+      // 1) Create directories (top-down; the plan is already ordered).
+      for (const a of actions) {
+        if (a.kind !== 'mkdir') continue;
+        try {
+          await dst.mkdir(a.dstPath);
+        } catch (e) {
+          if (!(e instanceof FsError && e.code === 'exists')) throw e;
+        }
+      }
+      // 2) Queue the file copies (overwrite: the plan already decided these).
+      for (const a of actions) {
+        if (a.kind !== 'copy') continue;
+        queue.enqueue({
+          name: a.name,
+          direction,
+          src,
+          srcPath: a.srcPath,
+          dst,
+          dstPath: a.dstPath,
+          size: a.size,
+          isDir: false,
+          overwrite: true,
+        });
+      }
+      // 3) Delete extraneous destination entries (mirror mode only produces these).
+      for (const a of actions) {
+        if (a.kind !== 'delete') continue;
+        await dst.remove(a.dstPath, true);
+      }
+
+      // Copies refresh the destination pane on completion; mkdir/delete need a nudge.
+      if (direction === 'up') setRemoteRefreshNonce((n) => n + 1);
+      else setLocalRefreshNonce((n) => n + 1);
+    },
+    [syncRoots, queue],
+  );
 
   const value: AppState = {
     theme,
@@ -811,6 +929,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     conflictPrompt,
     resolveConflict,
     enqueueTransfer,
+    canSync: !!(local && remote),
+    syncOpen,
+    openSync,
+    closeSync,
+    previewSync,
+    applySync,
     cancelJob,
     cancelAllJobs,
     retryJob,

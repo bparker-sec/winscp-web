@@ -26,6 +26,11 @@ export interface TransferJob {
   attempted?: boolean;
   /** True once this job has been retried at least once. UI hint only. */
   retried?: boolean;
+  /**
+   * Skip the exists/conflict check and overwrite the destination unconditionally.
+   * Used by synchronize, where an already-decided plan should not re-prompt.
+   */
+  overwrite?: boolean;
   /** Epoch ms when the current run's byte transfer began (reset on each retry). */
   startedAt?: number;
   /** Epoch ms when the job reached a terminal state after actually transferring. */
@@ -50,6 +55,8 @@ export interface EnqueueEntry {
   dstPath: string;
   size?: number;
   isDir: boolean;
+  /** Overwrite the destination without a conflict prompt (used by synchronize). */
+  overwrite?: boolean;
 }
 
 const TERMINAL_STATES: JobState[] = ['done', 'skipped', 'error', 'cancelled'];
@@ -117,6 +124,7 @@ export class TransferQueue {
       dstPath: entry.dstPath,
       size: entry.size,
       isDir: entry.isDir,
+      overwrite: entry.overwrite,
       state: 'queued',
       bytes: 0,
     };
@@ -201,7 +209,7 @@ export class TransferQueue {
     try {
       let target = job.dstPath;
 
-      if (!job.isDir && !resume) {
+      if (!job.isDir && !resume && !job.overwrite) {
         let exists = true;
         try {
           await job.dst.stat(target);
