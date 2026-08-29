@@ -41,7 +41,49 @@ export interface TransferJob {
    * resumed transfer's rate reflects only the bytes moved this run.
    */
   startBytes?: number;
+  /**
+   * True for a job restored from a previous session's persisted history. Its
+   * live FileSystem handles are gone, so it is display-only: it can't be run or
+   * retried, only cleared.
+   */
+  restored?: boolean;
 }
+
+/** The serializable subset of a job persisted across reloads (no live handles). */
+export interface PersistedJob {
+  id: string;
+  name: string;
+  direction: Direction;
+  srcPath: string;
+  dstPath: string;
+  size?: number;
+  isDir: boolean;
+  state: JobState;
+  bytes: number;
+  error?: string;
+  startedAt?: number;
+  finishedAt?: number;
+}
+
+function toPersisted(job: TransferJob): PersistedJob {
+  return {
+    id: job.id,
+    name: job.name,
+    direction: job.direction,
+    srcPath: job.srcPath,
+    dstPath: job.dstPath,
+    size: job.size,
+    isDir: job.isDir,
+    state: job.state,
+    bytes: job.bytes,
+    error: job.error,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+  };
+}
+
+// Stand-in FileSystem for restored (display-only) jobs; it must never run.
+const DEAD_FS = { kind: 'mock', label: '(previous session)' } as unknown as FileSystem;
 
 export type ConflictChoice = 'overwrite' | 'skip' | 'rename';
 export type ConflictResolver = (job: TransferJob) => Promise<ConflictChoice>;
@@ -96,6 +138,7 @@ export class TransferQueue {
   private readonly concurrency: number;
   private readonly conflict: ConflictResolver;
   private readonly pipelineDepth?: () => number;
+  private readonly onPersist?: (jobs: PersistedJob[]) => void;
   private jobsList: TransferJob[] = [];
   private activeCount = 0;
   private readonly controllers = new Map<string, AbortController>();
@@ -107,10 +150,30 @@ export class TransferQueue {
     conflict?: ConflictResolver;
     /** Read at each transfer's start so a settings change applies to new transfers. */
     pipelineDepth?: () => number;
+    /** Called with the persistable job list whenever it changes (for reload survival). */
+    onPersist?: (jobs: PersistedJob[]) => void;
+    /** History from a previous session, hydrated as display-only "restored" jobs. */
+    restoredJobs?: PersistedJob[];
   }) {
     this.concurrency = opts?.concurrency ?? 2;
     this.conflict = opts?.conflict ?? (async () => 'overwrite');
     this.pipelineDepth = opts?.pipelineDepth;
+    this.onPersist = opts?.onPersist;
+    if (opts?.restoredJobs?.length) {
+      this.jobsList = opts.restoredJobs.map((p) => {
+        // A job left non-terminal by a reload can't continue (its live handles
+        // are gone) — show it as interrupted rather than pretending it's running.
+        const wasInterrupted = !TERMINAL_STATES.includes(p.state);
+        return {
+          ...p,
+          src: DEAD_FS,
+          dst: DEAD_FS,
+          restored: true,
+          state: wasInterrupted ? 'error' : p.state,
+          error: wasInterrupted ? 'Interrupted by page reload' : p.error,
+        } satisfies TransferJob;
+      });
+    }
   }
 
   enqueue(entry: EnqueueEntry): string {
@@ -167,6 +230,8 @@ export class TransferQueue {
   retry(id: string): void {
     const job = this.jobsList.find((j) => j.id === id);
     if (!job) return;
+    // Restored (previous-session) jobs have no live handles and can't be re-run.
+    if (job.restored) return;
     if (job.state !== 'error' && job.state !== 'cancelled') return;
     job.state = 'queued';
     job.retried = true;
@@ -312,6 +377,15 @@ export class TransferQueue {
         fn(snapshot);
       } catch {
         // A misbehaving subscriber must not break the queue or other listeners.
+      }
+    }
+    // Persist on the immediate (state-change) emits only — not every throttled
+    // progress tick — so reload survives without hammering storage.
+    if (immediate && this.onPersist) {
+      try {
+        this.onPersist(snapshot.map(toPersisted));
+      } catch {
+        // storage may be unavailable (private mode, quota) — never break the queue
       }
     }
   }

@@ -61,8 +61,9 @@ function stateLabel(job: TransferJob): string {
 function Row({ job, now }: { job: TransferJob; now: number }) {
   const { cancelJob, retryJob } = useApp();
   const pct = job.size ? Math.min(100, Math.round((job.bytes / job.size) * 100)) : undefined;
-  const cancellable = job.state === 'queued' || job.state === 'active' || job.state === 'conflict';
-  const retryable = job.state === 'error' || job.state === 'cancelled';
+  const cancellable = !job.restored && (job.state === 'queued' || job.state === 'active' || job.state === 'conflict');
+  // Restored (previous-session) jobs have no live handles, so they can't be retried.
+  const retryable = !job.restored && (job.state === 'error' || job.state === 'cancelled');
 
   const t = timing(job, now);
   const isActive = job.state === 'active' || job.state === 'conflict';
@@ -82,6 +83,11 @@ function Row({ job, now }: { job: TransferJob; now: number }) {
           {job.retried && (job.state === 'active' || job.state === 'conflict' || job.state === 'done') && (
             <span className="ml-1 text-muted" title="Resumed from a previous attempt">
               ↻ resumed
+            </span>
+          )}
+          {job.restored && (
+            <span className="ml-1 text-muted" title="From a previous session (history only)">
+              · previous session
             </span>
           )}
         </span>

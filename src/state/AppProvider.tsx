@@ -37,7 +37,7 @@ import { rememberHost } from '../ssh/knownhosts';
 import { Vault, type VaultState } from '../connections/vault';
 import { ConnectionStore, type SavedConnection } from '../connections/store';
 import { parseOpenSshPrivateKey } from '../ssh/privatekey';
-import { TransferQueue, type TransferJob, type ConflictChoice } from '../transfer/queue';
+import { TransferQueue, type TransferJob, type ConflictChoice, type PersistedJob } from '../transfer/queue';
 import { diag } from '../diagnostics/log';
 import { getSettings, setSettings } from '../settings/appSettings';
 import { describeError } from '../fs/describeError';
@@ -163,6 +163,8 @@ interface AppState {
   setPipelineDepth: (depth: number) => void;
   transferWindowMB: number;
   setTransferWindowMB: (mb: number) => void;
+  enablePassphraseKeys: boolean;
+  setEnablePassphraseKeys: (v: boolean) => void;
 }
 
 /** A synchronize request: which pane is the source of truth, and the compare rules. */
@@ -199,6 +201,30 @@ interface ParkedSession {
   conn: RemoteConnection;
   creds: RemoteCredentials | null;
   dropped: boolean;
+}
+
+const TRANSFERS_KEY = 'winscp-transfers';
+const MAX_PERSISTED_TRANSFERS = 100;
+
+/** Load the persisted transfer history (previous session), safely. */
+function readPersistedTransfers(): PersistedJob[] {
+  try {
+    const raw = localStorage.getItem(TRANSFERS_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as PersistedJob[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Persist the transfer list (capped to the most recent N), safely. */
+function writePersistedTransfers(jobs: PersistedJob[]): void {
+  try {
+    localStorage.setItem(TRANSFERS_KEY, JSON.stringify(jobs.slice(-MAX_PERSISTED_TRANSFERS)));
+  } catch {
+    // storage unavailable (private mode / quota) — ignore
+  }
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -294,6 +320,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setTransferWindowMB = useCallback((mb: number) => {
     setSettings({ transferWindowMB: mb });
     setTransferWindowMBState(getSettings().transferWindowMB);
+  }, []);
+  const [enablePassphraseKeys, setEnablePassphraseKeysState] = useState<boolean>(
+    () => getSettings().enablePassphraseKeys,
+  );
+  const setEnablePassphraseKeys = useCallback((v: boolean) => {
+    setSettings({ enablePassphraseKeys: v });
+    setEnablePassphraseKeysState(getSettings().enablePassphraseKeys);
   }, []);
 
   // Sliding auto-lock: any successful unlock or vault use restarts this timer.
@@ -861,6 +894,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () =>
       new TransferQueue({
         pipelineDepth: () => getSettings().pipelineDepth,
+        // Persist a capped transfer history so it survives a page reload. Live
+        // in-flight transfers can't resume (their connections die on reload);
+        // restored jobs are display-only.
+        restoredJobs: readPersistedTransfers(),
+        onPersist: (jobs) => writePersistedTransfers(jobs),
         conflict: (job) =>
           new Promise<ConflictChoice>((resolve) => {
             if (appliedChoiceRef.current) {
@@ -893,6 +931,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         conflictQueueRef.current = [];
       }
       for (const job of snapshot) {
+        // Restored (previous-session) jobs are history — they didn't just
+        // complete, so don't log them or refresh panes for them.
+        if (job.restored) continue;
         if (job.state === 'queued' || job.state === 'active') {
           // A retried job cycles back through these states — allow it to be
           // logged again if it reaches a terminal state a second time.
@@ -1155,6 +1196,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setPipelineDepth,
     transferWindowMB,
     setTransferWindowMB,
+    enablePassphraseKeys,
+    setEnablePassphraseKeys,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

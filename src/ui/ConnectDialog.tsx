@@ -1,7 +1,12 @@
 import { useState } from 'react';
 import { Modal } from './Modal';
 import { useApp } from '../state/AppProvider';
-import { parseOpenSshPrivateKey } from '../ssh/privatekey';
+import {
+  parseOpenSshPrivateKey,
+  isEncryptedOpenSshKey,
+  encodeUnencryptedOpenSshKey,
+  EncryptedKeyError,
+} from '../ssh/privatekey';
 import { ConnectionStore } from '../connections/store';
 import type { SftpCredentials } from '../sftp/SftpConnection';
 import type { RemoteCredentials, RemoteProtocol } from '../remote/connect';
@@ -16,8 +21,15 @@ const PROTOCOLS: { value: RemoteProtocol; label: string; defaultPort: number }[]
 ];
 
 export function ConnectDialog() {
-  const { remoteConnecting, remoteError, remoteConnect, closeConnectDialog, connectDialogPrefill, saveConnection } =
-    useApp();
+  const {
+    remoteConnecting,
+    remoteError,
+    remoteConnect,
+    closeConnectDialog,
+    connectDialogPrefill,
+    saveConnection,
+    enablePassphraseKeys,
+  } = useApp();
 
   const prefill = connectDialogPrefill;
   const [protocol, setProtocol] = useState<RemoteProtocol>('sftp');
@@ -28,6 +40,7 @@ export function ConnectDialog() {
   const [authMethod, setAuthMethod] = useState<AuthMethod>(prefill?.authMethod ?? 'password');
   const [password, setPassword] = useState('');
   const [privateKey, setPrivateKey] = useState('');
+  const [keyPassphrase, setKeyPassphrase] = useState('');
 
   const [localError, setLocalError] = useState<string | null>(null);
   const [saveEnabled, setSaveEnabled] = useState(!!prefill);
@@ -44,37 +57,57 @@ export function ConnectDialog() {
     if (p !== 'sftp') setSaveEnabled(false);
   };
 
-  const buildCreds = (): RemoteCredentials | null => {
+  // Returns the credentials plus the secret string to persist if saving (for a
+  // key that's passphrase-encrypted, that's the decrypted form so no passphrase
+  // is needed again). Sets localError and returns null on a bad key/passphrase.
+  const buildCreds = (): { creds: RemoteCredentials; saveSecret: string } | null => {
     if (protocol === 'sftp') {
       const creds: SftpCredentials = { host, port, username };
       if (authMethod === 'key') {
-        try {
-          const k = parseOpenSshPrivateKey(privateKey);
-          creds.privateKey = { seed: k.seed, publicKey: k.publicKey };
-        } catch {
-          setLocalError('Unsupported or invalid private key (encrypted keys are not yet supported).');
+        const encrypted = isEncryptedOpenSshKey(privateKey);
+        if (encrypted && !enablePassphraseKeys) {
+          setLocalError(
+            'This key is passphrase-protected. Turn on “Enable passphrase-protected SSH keys” in Settings to use it.',
+          );
           return null;
         }
-      } else {
-        creds.password = password;
+        let parsed;
+        try {
+          parsed = parseOpenSshPrivateKey(privateKey, keyPassphrase || undefined);
+        } catch (err) {
+          if (err instanceof EncryptedKeyError) {
+            setLocalError('This key is encrypted — enter its passphrase.');
+          } else {
+            setLocalError(err instanceof Error ? err.message : 'Unsupported or invalid private key.');
+          }
+          return null;
+        }
+        creds.privateKey = { seed: parsed.seed, publicKey: parsed.publicKey };
+        // Save the decrypted key (as an unencrypted PEM) so reconnecting never
+        // needs the passphrase; an already-plain key is stored as-is.
+        const saveSecret = encrypted
+          ? encodeUnencryptedOpenSshKey(parsed.seed, parsed.publicKey)
+          : privateKey;
+        return { creds: { protocol: 'sftp', ...creds }, saveSecret };
       }
-      return { protocol: 'sftp', ...creds };
+      creds.password = password;
+      return { creds: { protocol: 'sftp', ...creds }, saveSecret: password };
     }
-    // ftp
-    return { protocol: 'ftp', host, port, username, password };
+    // ftp (not saveable yet)
+    return { creds: { protocol: 'ftp', host, port, username, password }, saveSecret: '' };
   };
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setLocalError(null);
 
-    const creds = buildCreds();
-    if (!creds) return;
+    const built = buildCreds();
+    if (!built) return;
+    const { creds, saveSecret } = built;
 
     if (canSave && saveEnabled) {
-      const secretString = authMethod === 'key' ? privateKey : password;
       const id = prefill?.id ?? ConnectionStore.newId();
-      const secretToSave = alwaysPrompt || !secretString ? undefined : secretString;
+      const secretToSave = alwaysPrompt || !saveSecret ? undefined : saveSecret;
       void saveConnection(
         {
           id,
@@ -172,16 +205,34 @@ export function ConnectDialog() {
         )}
 
         {protocol === 'sftp' && authMethod === 'key' && (
-          <label className="flex flex-col gap-1 text-[13px]">
-            Private key (OpenSSH PEM)
-            <textarea
-              className="h-24 px-2 py-1 rounded border border-border bg-transparent font-mono text-[12px]"
-              value={privateKey}
-              onChange={(e) => setPrivateKey(e.target.value)}
-              placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-            />
-            <span className="text-muted text-[11px]">Encrypted keys are not yet supported.</span>
-          </label>
+          <>
+            <label className="flex flex-col gap-1 text-[13px]">
+              Private key (OpenSSH PEM)
+              <textarea
+                className="h-24 px-2 py-1 rounded border border-border bg-transparent font-mono text-[12px]"
+                value={privateKey}
+                onChange={(e) => setPrivateKey(e.target.value)}
+                placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+              />
+              <span className="text-muted text-[11px]">
+                {enablePassphraseKeys
+                  ? 'Passphrase-protected keys are supported (enter the passphrase below).'
+                  : 'Passphrase-protected keys are off — enable them in Settings to use one.'}
+              </span>
+            </label>
+            {enablePassphraseKeys && (
+              <label className="flex flex-col gap-1 text-[13px]">
+                Key passphrase (only if the key is encrypted)
+                <input
+                  type="password"
+                  className={field}
+                  value={keyPassphrase}
+                  onChange={(e) => setKeyPassphrase(e.target.value)}
+                  autoComplete="off"
+                />
+              </label>
+            )}
+          </>
         )}
 
         {canSave && (

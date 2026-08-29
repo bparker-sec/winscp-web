@@ -18,6 +18,13 @@ export interface AppSettings {
    * by the server's own window and are unaffected.
    */
   transferWindowMB: number;
+  /**
+   * Opt-in support for passphrase-protected SSH private keys. Off by default to
+   * keep the common case simple (no extra prompts). When on, the Connect dialog
+   * shows a passphrase field; an encrypted key is decrypted once and stored
+   * decrypted in the vault so the passphrase is never needed again.
+   */
+  enablePassphraseKeys: boolean;
 }
 
 /** Allowed range for pipeline depth (UI offers discrete steps within this). */
@@ -34,6 +41,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   vaultLockMinutes: 15,
   pipelineDepth: PIPELINE_DEPTH_MAX,
   transferWindowMB: 16,
+  enablePassphraseKeys: false,
 };
 
 const STORAGE_KEY = 'winscp-settings';
@@ -86,6 +94,10 @@ function sanitize(v: unknown): AppSettings {
       TRANSFER_WINDOW_MAX_MB,
       DEFAULT_SETTINGS.transferWindowMB,
     ),
+    enablePassphraseKeys:
+      typeof o.enablePassphraseKeys === 'boolean'
+        ? o.enablePassphraseKeys
+        : DEFAULT_SETTINGS.enablePassphraseKeys,
   };
 }
 

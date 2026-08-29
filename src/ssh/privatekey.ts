@@ -1,8 +1,8 @@
 // Parse an OpenSSH private key (openssh-key-v1), Ed25519 only.
 // Supports unencrypted keys and passphrase-encrypted keys using the bcrypt
 // KDF with aes-ctr / aes-cbc / aes-gcm ciphers.
-import { base64Decode } from '../net/base64';
-import { SshReader } from './wire';
+import { base64Decode, base64Encode } from '../net/base64';
+import { SshReader, SshWriter } from './wire';
 import { bcryptPbkdf } from './crypto/bcrypt_pbkdf';
 import { ctr, cbc, gcm } from '@noble/ciphers/aes';
 
@@ -233,4 +233,59 @@ export function parseOpenSshPrivateKey(pem: string, passphrase?: string): Parsed
   const seed = priv.slice(0, 32);
 
   return { type: 'ssh-ed25519', publicKey, seed };
+}
+
+/**
+ * Serialize an ed25519 key (seed + public key) as an UNENCRYPTED openssh-key-v1
+ * PEM. Used by the "passphrase-protected keys" feature: an encrypted key the
+ * user imports is decrypted once and re-stored in this plaintext form (inside
+ * the app's encrypted vault), so the key's own passphrase is never needed again.
+ */
+export function encodeUnencryptedOpenSshKey(seed: Uint8Array, publicKey: Uint8Array): string {
+  if (seed.length !== 32 || publicKey.length !== 32) {
+    throw new Error('encodeUnencryptedOpenSshKey requires a 32-byte seed and public key.');
+  }
+  const priv = new Uint8Array(64);
+  priv.set(seed, 0);
+  priv.set(publicKey, 32);
+
+  // Random check int (stored twice; validates a future decryption/parse).
+  const checkBytes = crypto.getRandomValues(new Uint8Array(4));
+  const checkint = new DataView(checkBytes.buffer).getUint32(0);
+
+  const pubBlob = new SshWriter().string('ssh-ed25519').string(publicKey).finish();
+
+  let privBytes = new SshWriter()
+    .uint32(checkint)
+    .uint32(checkint)
+    .string('ssh-ed25519')
+    .string(publicKey)
+    .string(priv)
+    .string('') // empty comment
+    .finish();
+  // Pad the private section to the "none" cipher block size (8) with 1,2,3,...
+  const padLen = (8 - (privBytes.length % 8)) % 8;
+  if (padLen > 0) {
+    const padded = new Uint8Array(privBytes.length + padLen);
+    padded.set(privBytes, 0);
+    for (let i = 0; i < padLen; i++) padded[privBytes.length + i] = i + 1;
+    privBytes = padded;
+  }
+
+  const body = new SshWriter()
+    .string('none') // ciphername
+    .string('none') // kdfname
+    .string(new Uint8Array(0)) // kdfoptions
+    .uint32(1) // numkeys
+    .string(pubBlob)
+    .string(privBytes)
+    .finish();
+
+  const magic = new TextEncoder().encode(MAGIC);
+  const blob = new Uint8Array(magic.length + body.length);
+  blob.set(magic, 0);
+  blob.set(body, magic.length);
+
+  const wrapped = base64Encode(blob).match(/.{1,70}/g)?.join('\n') ?? '';
+  return `${BEGIN_MARKER}\n${wrapped}\n${END_MARKER}\n`;
 }

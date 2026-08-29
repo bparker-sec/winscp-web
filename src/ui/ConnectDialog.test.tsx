@@ -10,6 +10,11 @@ vi.mock('../state/AppProvider', () => ({
 
 vi.mock('../ssh/privatekey', () => ({
   parseOpenSshPrivateKey: vi.fn(),
+  isEncryptedOpenSshKey: vi.fn(() => false),
+  encodeUnencryptedOpenSshKey: vi.fn(
+    () => '-----BEGIN OPENSSH PRIVATE KEY-----\nx\n-----END OPENSSH PRIVATE KEY-----\n',
+  ),
+  EncryptedKeyError: class EncryptedKeyError extends Error {},
 }));
 
 const mockUseApp = useApp as unknown as ReturnType<typeof vi.fn>;
@@ -26,6 +31,7 @@ function setup(overrides: Partial<ReturnType<typeof useApp>> = {}) {
     closeConnectDialog,
     connectDialogPrefill: null,
     saveConnection,
+    enablePassphraseKeys: false,
     ...overrides,
   });
   return { remoteConnect, closeConnectDialog, saveConnection };
@@ -54,7 +60,7 @@ describe('ConnectDialog', () => {
 
   it('shows inline error and does not call remoteConnect on invalid key', () => {
     mockParseKey.mockImplementation(() => {
-      throw new Error('bad key');
+      throw new Error('Unsupported or invalid private key.');
     });
     const { remoteConnect } = setup();
     render(<ConnectDialog />);
@@ -182,6 +188,49 @@ describe('ConnectDialog', () => {
       expect.objectContaining({ id: 'existing-id', name: 'New name' }),
       undefined,
     );
+  });
+
+  it('encrypted key with the passphrase setting OFF shows a Settings hint and does not connect', async () => {
+    const { isEncryptedOpenSshKey } = await import('../ssh/privatekey');
+    (isEncryptedOpenSshKey as unknown as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    const { remoteConnect } = setup({ enablePassphraseKeys: false });
+    render(<ConnectDialog />);
+    fireEvent.click(screen.getByLabelText(/private key/i));
+    fireEvent.change(screen.getByPlaceholderText(/BEGIN OPENSSH PRIVATE KEY/), {
+      target: { value: 'encrypted-key' },
+    });
+    fireEvent.change(screen.getByText(/^host$/i).closest('label')!.querySelector('input')!, { target: { value: 'h' } });
+    fireEvent.change(screen.getByText(/^username$/i).closest('label')!.querySelector('input')!, { target: { value: 'u' } });
+    fireEvent.click(screen.getByRole('button', { name: /connect$/i }));
+    expect(screen.getByRole('alert').textContent).toMatch(/settings/i);
+    expect(remoteConnect).not.toHaveBeenCalled();
+    (isEncryptedOpenSshKey as unknown as ReturnType<typeof vi.fn>).mockReturnValue(false);
+  });
+
+  it('encrypted key with the setting ON decrypts with the passphrase, connects, and saves the DECRYPTED key', async () => {
+    const { isEncryptedOpenSshKey, encodeUnencryptedOpenSshKey } = await import('../ssh/privatekey');
+    (isEncryptedOpenSshKey as unknown as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    mockParseKey.mockReturnValue({ type: 'ssh-ed25519', seed: new Uint8Array(32), publicKey: new Uint8Array(32) });
+    const { remoteConnect, saveConnection } = setup({ enablePassphraseKeys: true });
+    render(<ConnectDialog />);
+    fireEvent.click(screen.getByLabelText(/private key/i));
+    fireEvent.change(screen.getByPlaceholderText(/BEGIN OPENSSH PRIVATE KEY/), { target: { value: 'enc-key' } });
+    fireEvent.change(screen.getByText(/key passphrase/i).closest('label')!.querySelector('input')!, {
+      target: { value: 'secret-pass' },
+    });
+    fireEvent.change(screen.getByText(/^host$/i).closest('label')!.querySelector('input')!, { target: { value: 'h' } });
+    fireEvent.change(screen.getByText(/^username$/i).closest('label')!.querySelector('input')!, { target: { value: 'u' } });
+    fireEvent.click(screen.getByLabelText(/save this connection/i));
+    fireEvent.click(screen.getByRole('button', { name: /connect$/i }));
+
+    expect(mockParseKey).toHaveBeenCalledWith('enc-key', 'secret-pass');
+    expect(remoteConnect).toHaveBeenCalledWith(expect.objectContaining({ protocol: 'sftp' }));
+    // Saved secret is the re-serialized DECRYPTED key, not the original encrypted PEM.
+    expect(encodeUnencryptedOpenSshKey).toHaveBeenCalled();
+    const savedSecret = (saveConnection as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(savedSecret).toContain('BEGIN OPENSSH PRIVATE KEY');
+    expect(savedSecret).not.toBe('enc-key');
+    (isEncryptedOpenSshKey as unknown as ReturnType<typeof vi.fn>).mockReturnValue(false);
   });
 
   it('switching protocol to FTP hides the SFTP auth options and submits ftp creds', () => {

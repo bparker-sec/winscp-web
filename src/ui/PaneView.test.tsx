@@ -23,6 +23,12 @@ const entries: FsEntry[] = [
   { name: 'b.txt', path: '/b.txt', kind: 'file', size: 20 },
 ];
 
+const entriesWithHidden: FsEntry[] = [
+  { name: '.env', path: '/.env', kind: 'file', size: 5 },
+  { name: '.hidden', path: '/.hidden', kind: 'dir' },
+  { name: 'visible.txt', path: '/visible.txt', kind: 'file', size: 10 },
+];
+
 describe('PaneView multi-select', () => {
   it('Ctrl-click adds to selection and reports 2 entries via onSelectionChange', async () => {
     const onSelectionChange = vi.fn();
@@ -86,5 +92,47 @@ describe('PaneView drag-and-drop self-drop guard', () => {
     expect(onDropIn).toHaveBeenCalledTimes(1);
     expect(onDropIn.mock.calls[0][0]).toHaveLength(1);
     expect(onDropIn.mock.calls[0][0][0].name).toBe('a.txt');
+  });
+});
+
+describe('PaneView hidden-files toggle', () => {
+  it('hides dotfiles by default and reveals them when toggled', async () => {
+    const fs = fakeFs(entriesWithHidden);
+    render(<PaneView fs={fs} header="Test" />);
+
+    await screen.findByText('visible.txt');
+    // Dotfiles hidden by default.
+    expect(screen.queryByText('.env')).toBeNull();
+    expect(screen.queryByText('.hidden')).toBeNull();
+
+    // Toggle shows them.
+    fireEvent.click(screen.getByTitle('Show hidden files'));
+    await screen.findByText('.env');
+    expect(screen.getByText('.hidden')).toBeTruthy();
+
+    // Toggle again hides them.
+    fireEvent.click(screen.getByTitle('Hide dotfiles'));
+    await waitFor(() => expect(screen.queryByText('.env')).toBeNull());
+  });
+});
+
+describe('PaneView Properties button', () => {
+  it('is disabled unless exactly one entry is selected', async () => {
+    const fs = fakeFs(entries);
+    render(<PaneView fs={fs} header="Test" />);
+
+    await screen.findByText('a.txt');
+    const propsBtn = screen.getByTitle('Properties') as HTMLButtonElement;
+
+    // No selection → disabled.
+    expect(propsBtn.disabled).toBe(true);
+
+    // One selected → enabled.
+    fireEvent.click(screen.getByText('a.txt'));
+    await waitFor(() => expect(propsBtn.disabled).toBe(false));
+
+    // Two selected → disabled.
+    fireEvent.click(screen.getByText('b.txt'), { ctrlKey: true });
+    await waitFor(() => expect(propsBtn.disabled).toBe(true));
   });
 });

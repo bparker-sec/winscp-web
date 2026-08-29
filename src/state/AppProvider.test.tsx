@@ -49,6 +49,7 @@ const creds = { protocol: 'sftp' as const, host: 'example.com', port: 22, userna
 
 describe('AppProvider remote connection state machine', () => {
   beforeEach(() => {
+    localStorage.clear();
     mockConnectSftp.mockReset();
     mockRememberHost.mockReset();
   });
@@ -292,6 +293,7 @@ describe('AppProvider remote connection state machine', () => {
 
 describe('AppProvider auto-reconnect on connection loss', () => {
   beforeEach(() => {
+    localStorage.clear();
     mockConnectSftp.mockReset();
     mockRememberHost.mockReset();
   });
@@ -389,6 +391,7 @@ describe('AppProvider auto-reconnect on connection loss', () => {
 
 describe('AppProvider conflict-resolver wiring', () => {
   beforeEach(() => {
+    localStorage.clear();
     mockConnectSftp.mockReset();
     mockRememberHost.mockReset();
     mockConnectOneDrive.mockReset();
@@ -477,6 +480,7 @@ describe('AppProvider conflict-resolver wiring', () => {
 
 describe('AppProvider destination-pane auto-refresh on transfer completion', () => {
   beforeEach(() => {
+    localStorage.clear();
     mockConnectSftp.mockReset();
     mockRememberHost.mockReset();
     mockConnectOneDrive.mockReset();

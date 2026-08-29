@@ -80,6 +80,8 @@ export function SettingsDialog() {
     setPipelineDepth,
     transferWindowMB,
     setTransferWindowMB,
+    enablePassphraseKeys,
+    setEnablePassphraseKeys,
   } = useApp();
   const [events, setEvents] = useState<DiagEvent[]>(() => diag.getEvents());
   const [hostBridge, setHostBridge] = useState<ProbeState>('checking');
@@ -164,6 +166,21 @@ export function SettingsDialog() {
             </label>
             <div className="text-muted text-[11px]">
               How long saved-connection secrets stay unlocked after you enter the master passphrase.
+            </div>
+
+            <label className="flex items-center gap-2 mt-1">
+              <input
+                type="checkbox"
+                checked={enablePassphraseKeys}
+                onChange={(e) => setEnablePassphraseKeys(e.target.checked)}
+              />
+              <span>Enable passphrase-protected SSH keys</span>
+            </label>
+            <div className="text-muted text-[11px]">
+              Off by default to keep key setup simple. When on, the Connect dialog accepts a
+              passphrase for an encrypted private key; the key is decrypted once and stored
+              (protected by your master passphrase), so you won&apos;t be asked for the key passphrase
+              again.
             </div>
           </div>
         </section>

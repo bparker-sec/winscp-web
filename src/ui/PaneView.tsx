@@ -1,9 +1,27 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { FileSystem, FsEntry } from '../fs/FileSystem';
 import { joinPath, parentPath } from '../fs/FileSystem';
 import { describeError } from '../fs/describeError';
 import { IconFolder, IconFile, IconUp, IconDown, IconRefresh, IconNewFolder, IconTrash } from './icons';
 import { PromptModal } from './PromptModal';
+import { PropertiesDialog } from './PropertiesDialog';
+
+/** Small inline eye / eye-off glyph for the hidden-files toggle. */
+function EyeIcon({ off }: { off: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+      strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+      <circle cx="12" cy="12" r="3" />
+      {off && <path d="M3 3l18 18" />}
+    </svg>
+  );
+}
+
+/** Fixed height (px) of one file row; used by the windowing math below. */
+const ROW_H = 22;
+/** Extra rows rendered above/below the viewport to avoid blank flashes while scrolling. */
+const OVERSCAN = 6;
 
 type SortKey = 'name' | 'size' | 'mtime';
 
@@ -34,14 +52,14 @@ interface Props {
 // Records the drag's source side so a drop handler can refuse a same-pane drop.
 let currentDrag: { side?: 'local' | 'remote'; entries: FsEntry[] } | null = null;
 
-function fmtSize(n?: number): string {
+export function fmtSize(n?: number): string {
   if (n === undefined) return '';
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function fmtDate(ms?: number): string {
+export function fmtDate(ms?: number): string {
   if (!ms) return '';
   return new Date(ms).toISOString().slice(0, 16).replace('T', ' ');
 }
@@ -68,9 +86,14 @@ export function PaneView({
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [showRename, setShowRename] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
+  const [showProperties, setShowProperties] = useState(false);
+  const [showHidden, setShowHidden] = useState(false);
   const lastAnchorRef = useRef<string | null>(null);
   const hoveredRef = useRef(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(0);
 
   const reload = () => setRefreshKey((k) => k + 1);
 
@@ -105,15 +128,21 @@ export function PaneView({
     onCwdChange?.(cwd);
   }, [cwd, onCwdChange]);
 
+  const hiddenCount = useMemo(
+    () => entries.filter((e) => e.name.startsWith('.')).length,
+    [entries],
+  );
+
   const rows = useMemo(() => {
     const dirRank = (e: FsEntry) => (e.kind === 'dir' ? 0 : 1);
-    return [...entries].sort((a, b) => {
+    const visible = showHidden ? entries : entries.filter((e) => !e.name.startsWith('.'));
+    return [...visible].sort((a, b) => {
       if (dirRank(a) !== dirRank(b)) return dirRank(a) - dirRank(b); // folders first, always
       if (sortKey === 'size') return (a.size ?? 0) - (b.size ?? 0);
       if (sortKey === 'mtime') return (a.mtime ?? 0) - (b.mtime ?? 0);
       return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     });
-  }, [entries, sortKey]);
+  }, [entries, sortKey, showHidden]);
 
   const selectedEntries = useMemo(
     () => rows.filter((e) => selected.has(e.path)),
@@ -225,6 +254,35 @@ export function PaneView({
     });
   };
 
+  // --- Row windowing ---------------------------------------------------------
+  // Measure the scroll viewport so we can render only the visible slice of rows.
+  // jsdom reports 0 for clientHeight, so viewportH stays 0 there and we fall back
+  // to rendering every row (see `windowed` below) — that keeps tests, which assert
+  // on specific rows, working while still virtualizing in a real browser.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const measure = () => setViewportH(el.clientHeight);
+    measure();
+    const RO = (window as unknown as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
+    if (!RO) return;
+    const ro = new RO(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // When the height is unknown (0 — jsdom, or before first measure) render ALL rows.
+  const virtualize = viewportH > 0;
+  const total = rows.length;
+  const startIdx = virtualize ? Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN) : 0;
+  const visibleCount = virtualize
+    ? Math.ceil(viewportH / ROW_H) + OVERSCAN * 2
+    : total;
+  const endIdx = virtualize ? Math.min(total, startIdx + visibleCount) : total;
+  const visibleRows = rows.slice(startIdx, endIdx);
+  const padTop = startIdx * ROW_H;
+  const padBottom = Math.max(0, (total - endIdx) * ROW_H);
+
   const transferLabel = side === 'local' ? 'Upload →' : side === 'remote' ? '← Download' : 'Transfer';
   const transferTitle = side === 'local' ? 'Upload to remote' : side === 'remote' ? 'Download to local' : 'Transfer';
 
@@ -285,6 +343,14 @@ export function PaneView({
           Rename
         </button>
         <button
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-muted hover:bg-accent/10 hover:text-fg disabled:opacity-40 disabled:pointer-events-none"
+          disabled={selectedEntries.length !== 1}
+          onClick={() => setShowProperties(true)}
+          title="Properties"
+        >
+          Properties
+        </button>
+        <button
           className="flex items-center gap-1 px-1.5 py-0.5 rounded text-muted hover:bg-danger/10 hover:text-danger disabled:opacity-40 disabled:pointer-events-none"
           disabled={selectedEntries.length === 0}
           onClick={() => setShowDelete(true)}
@@ -302,6 +368,19 @@ export function PaneView({
             {side === 'remote' ? <IconDown /> : <IconUp />} {transferLabel}
           </button>
         )}
+        <button
+          className={`ml-auto flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-accent/10 hover:text-fg ${
+            showHidden ? 'text-fg bg-accent/10' : 'text-muted'
+          }`}
+          aria-pressed={showHidden}
+          onClick={() => setShowHidden((v) => !v)}
+          title={showHidden ? 'Hide dotfiles' : 'Show hidden files'}
+        >
+          <EyeIcon off={!showHidden} /> Hidden
+          {!showHidden && hiddenCount > 0 && (
+            <span className="text-muted">({hiddenCount})</span>
+          )}
+        </button>
       </div>
       {actionError && (
         <div className="px-2 py-1 text-[11px] text-danger border-b border-border">{actionError}</div>
@@ -311,36 +390,42 @@ export function PaneView({
         <button className="text-right" onClick={() => setSortKey('size')}>Size</button>
         <button className="text-right" onClick={() => setSortKey('mtime')}>Modified</button>
       </div>
-      <div className="flex-1 min-h-0 overflow-auto font-mono text-[12px]">
+      <div
+        ref={scrollRef}
+        className="flex-1 min-h-0 overflow-auto font-mono text-[12px]"
+        onScroll={(evt) => setScrollTop(evt.currentTarget.scrollTop)}
+      >
         {error && <div className="px-2 py-2 text-danger">{error}</div>}
-        {rows.map((e) => {
-          const isSel = selected.has(e.path);
-          return (
-            <div
-              key={e.path}
-              draggable
-              className={`grid grid-cols-[1fr_80px_130px] px-2 py-0.5 cursor-default border-l-2 ${
-                isSel
-                  ? 'selected bg-accent border-accent text-accent-fg font-medium'
-                  : 'border-transparent hover:bg-accent/10'
-              }`}
-              onClick={(evt) => selectRow(e, evt)}
-              onDoubleClick={() => e.kind === 'dir' && setCwd(e.path)}
-              onDragStart={(evt) => handleDragStart(e, evt)}
-            >
-              <span className="flex items-center gap-1 truncate">
-                {e.kind === 'dir' ? <IconFolder /> : <IconFile />}
-                {e.name}
-              </span>
-              <span className={`text-right ${isSel ? 'text-accent-fg/80' : 'text-muted'}`}>
-                {e.kind === 'dir' ? '' : fmtSize(e.size)}
-              </span>
-              <span className={`text-right ${isSel ? 'text-accent-fg/80' : 'text-muted'}`}>
-                {fmtDate(e.mtime)}
-              </span>
-            </div>
-          );
-        })}
+        <div style={{ paddingTop: padTop, paddingBottom: padBottom }}>
+          {visibleRows.map((e) => {
+            const isSel = selected.has(e.path);
+            return (
+              <div
+                key={e.path}
+                draggable
+                className={`grid grid-cols-[1fr_80px_130px] px-2 py-0.5 cursor-default border-l-2 ${
+                  isSel
+                    ? 'selected bg-accent border-accent text-accent-fg font-medium'
+                    : 'border-transparent hover:bg-accent/10'
+                }`}
+                onClick={(evt) => selectRow(e, evt)}
+                onDoubleClick={() => e.kind === 'dir' && setCwd(e.path)}
+                onDragStart={(evt) => handleDragStart(e, evt)}
+              >
+                <span className="flex items-center gap-1 truncate">
+                  {e.kind === 'dir' ? <IconFolder /> : <IconFile />}
+                  {e.name}
+                </span>
+                <span className={`text-right ${isSel ? 'text-accent-fg/80' : 'text-muted'}`}>
+                  {e.kind === 'dir' ? '' : fmtSize(e.size)}
+                </span>
+                <span className={`text-right ${isSel ? 'text-accent-fg/80' : 'text-muted'}`}>
+                  {fmtDate(e.mtime)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
       </div>
       {showNewFolder && (
         <PromptModal
@@ -370,6 +455,17 @@ export function PaneView({
           danger
           onSubmit={handleDeleteConfirm}
           onCancel={() => setShowDelete(false)}
+        />
+      )}
+      {showProperties && selectedEntries.length === 1 && (
+        <PropertiesDialog
+          fs={fs}
+          entry={selectedEntries[0]}
+          onClose={() => setShowProperties(false)}
+          onApplied={() => {
+            setShowProperties(false);
+            reload();
+          }}
         />
       )}
     </div>

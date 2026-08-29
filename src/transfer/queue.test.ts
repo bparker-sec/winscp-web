@@ -547,6 +547,41 @@ describe('TransferQueue', () => {
     expect(openWriteCalls[1].resume).toBe(true);
   });
 
+  it('persists completed jobs and hydrates a previous session as read-only restored jobs', async () => {
+    const src = new MockFS('src');
+    const dst = new MockFS('dst');
+    await writeFile(src, '/p.txt', 'persist me');
+
+    const persisted: unknown[] = [];
+    const q1 = new TransferQueue({ onPersist: (jobs) => persisted.push(jobs) });
+    const id = q1.enqueue({
+      name: 'p.txt', direction: 'up', src, srcPath: '/p.txt', dst, dstPath: '/p.txt', size: 10, isDir: false,
+    });
+    const done = await waitForState(q1, id, TERMINAL);
+    expect(done.state).toBe('done');
+    // The last persisted snapshot has the completed job's serializable metadata.
+    const last = persisted[persisted.length - 1] as Array<{ id: string; state: string; src?: unknown }>;
+    expect(last.find((j) => j.id === id)?.state).toBe('done');
+    expect(last[0]).not.toHaveProperty('src'); // no live handles persisted
+
+    // A new queue restores that history as display-only "restored" jobs.
+    const q2 = new TransferQueue({
+      restoredJobs: [
+        { id: 'r1', name: 'old.txt', direction: 'up', srcPath: '/a', dstPath: '/b', isDir: false, state: 'done', bytes: 5 },
+        { id: 'r2', name: 'live.txt', direction: 'up', srcPath: '/c', dstPath: '/d', isDir: false, state: 'active', bytes: 3 },
+      ],
+    });
+    const jobs = q2.jobs();
+    expect(jobs.find((j) => j.id === 'r1')?.restored).toBe(true);
+    // A job left non-terminal by a reload is shown as interrupted, not running.
+    const r2 = jobs.find((j) => j.id === 'r2')!;
+    expect(r2.state).toBe('error');
+    expect(r2.error).toMatch(/reload/i);
+    // Restored jobs can't be retried.
+    q2.retry('r1');
+    expect(q2.jobs().find((j) => j.id === 'r1')?.state).toBe('done');
+  });
+
   it('overwrite:true skips the conflict prompt and replaces the existing destination', async () => {
     const src = new MockFS('src');
     const dst = new MockFS('dst');
