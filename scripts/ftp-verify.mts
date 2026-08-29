@@ -65,10 +65,13 @@ function bytesEqual(a: Uint8Array, b: Uint8Array) {
 
 async function main() {
   console.log(`Connecting to FTP ${USER}@${HOST}:${PORT} ...`);
+  // Set FTP_SECURE=1 to test explicit FTPS (TLS). Self-signed certs are accepted
+  // (rejectUnauthorized:false) for LAN test servers.
+  const SECURE = process.env.FTP_SECURE === '1';
   const { fs, home, close } = await connectFtp(
-    { host: HOST, port: PORT, username: USER, password: PASS },
-    'live-ftp',
-    { tcpConnect: nodeTcpConnect },
+    { host: HOST, port: PORT, username: USER, password: PASS, secure: SECURE },
+    SECURE ? 'live-ftps' : 'live-ftp',
+    { tcpConnect: nodeTcpConnect, rejectUnauthorized: false },
   );
   console.log(`✓ connected (home=${home})`);
 
