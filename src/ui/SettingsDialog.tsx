@@ -106,7 +106,7 @@ export function SettingsDialog() {
 
   const buildDump = (): string => {
     const lines = [
-      'WinSCP Web diagnostics',
+      'Skiff diagnostics',
       `Host bridge: ${hostBridgeStatus}`,
       `OneDrive: ${oneDriveStatus}`,
       `Remote: ${remoteStatus}`,
@@ -250,7 +250,7 @@ export function SettingsDialog() {
           </div>
         </section>
 
-        <div className="text-[11px] text-muted">WinSCP Web — {versionLabel}</div>
+        <div className="text-[11px] text-muted">Skiff — {versionLabel}</div>
 
         <div className="flex justify-end">
           <button type="button" className="h-8 px-3 rounded border border-border" onClick={closeSettings}>

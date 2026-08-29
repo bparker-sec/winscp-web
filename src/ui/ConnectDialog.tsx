@@ -8,11 +8,11 @@ import type { RemoteCredentials, RemoteProtocol } from '../remote/connect';
 
 type AuthMethod = 'password' | 'key';
 
+// GUI currently exposes SFTP + FTP. The WebDAV/S3 adapters exist and are tested,
+// but are not surfaced here yet (fetch-based; CORS/mixed-content constraints).
 const PROTOCOLS: { value: RemoteProtocol; label: string; defaultPort: number }[] = [
   { value: 'sftp', label: 'SFTP (SSH)', defaultPort: 22 },
   { value: 'ftp', label: 'FTP', defaultPort: 21 },
-  { value: 'webdav', label: 'WebDAV', defaultPort: 443 },
-  { value: 's3', label: 'Amazon S3', defaultPort: 443 },
 ];
 
 export function ConnectDialog() {
@@ -22,24 +22,12 @@ export function ConnectDialog() {
   const prefill = connectDialogPrefill;
   const [protocol, setProtocol] = useState<RemoteProtocol>('sftp');
 
-  // Shared / SFTP+FTP fields
   const [host, setHost] = useState(prefill?.host ?? '');
   const [port, setPort] = useState(prefill?.port ?? 22);
   const [username, setUsername] = useState(prefill?.username ?? '');
   const [authMethod, setAuthMethod] = useState<AuthMethod>(prefill?.authMethod ?? 'password');
   const [password, setPassword] = useState('');
   const [privateKey, setPrivateKey] = useState('');
-
-  // WebDAV
-  const [url, setUrl] = useState('');
-
-  // S3
-  const [region, setRegion] = useState('us-east-1');
-  const [bucket, setBucket] = useState('');
-  const [endpoint, setEndpoint] = useState('');
-  const [accessKeyId, setAccessKeyId] = useState('');
-  const [secretAccessKey, setSecretAccessKey] = useState('');
-  const [forcePathStyle, setForcePathStyle] = useState(false);
 
   const [localError, setLocalError] = useState<string | null>(null);
   const [saveEnabled, setSaveEnabled] = useState(!!prefill);
@@ -72,22 +60,8 @@ export function ConnectDialog() {
       }
       return { protocol: 'sftp', ...creds };
     }
-    if (protocol === 'ftp') {
-      return { protocol: 'ftp', host, port, username, password };
-    }
-    if (protocol === 'webdav') {
-      return { protocol: 'webdav', url, username, password };
-    }
-    // s3
-    return {
-      protocol: 's3',
-      region,
-      bucket,
-      accessKeyId,
-      secretAccessKey,
-      endpoint: endpoint || undefined,
-      forcePathStyle,
-    };
+    // ftp
+    return { protocol: 'ftp', host, port, username, password };
   };
 
   const onSubmit = (e: React.FormEvent) => {
@@ -98,7 +72,6 @@ export function ConnectDialog() {
     if (!creds) return;
 
     if (canSave && saveEnabled) {
-      // An empty secret means "not re-entered" -- preserve the stored one.
       const secretString = authMethod === 'key' ? privateKey : password;
       const id = prefill?.id ?? ConnectionStore.newId();
       const secretToSave = alwaysPrompt || !secretString ? undefined : secretString;
@@ -140,28 +113,24 @@ export function ConnectDialog() {
           </select>
         </label>
 
-        {(protocol === 'sftp' || protocol === 'ftp') && (
-          <>
-            <label className="flex flex-col gap-1 text-[13px]">
-              Host
-              <input className={field} value={host} onChange={(e) => setHost(e.target.value)} required />
-            </label>
-            <label className="flex flex-col gap-1 text-[13px]">
-              Port
-              <input
-                type="number"
-                className={field}
-                value={port}
-                onChange={(e) => setPort(Number(e.target.value) || 22)}
-                required
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-[13px]">
-              Username
-              <input className={field} value={username} onChange={(e) => setUsername(e.target.value)} required />
-            </label>
-          </>
-        )}
+        <label className="flex flex-col gap-1 text-[13px]">
+          Host
+          <input className={field} value={host} onChange={(e) => setHost(e.target.value)} required />
+        </label>
+        <label className="flex flex-col gap-1 text-[13px]">
+          Port
+          <input
+            type="number"
+            className={field}
+            value={port}
+            onChange={(e) => setPort(Number(e.target.value) || 22)}
+            required
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[13px]">
+          Username
+          <input className={field} value={username} onChange={(e) => setUsername(e.target.value)} required />
+        </label>
 
         {protocol === 'sftp' && (
           <fieldset className="flex flex-col gap-1 text-[13px]">
@@ -215,76 +184,6 @@ export function ConnectDialog() {
           </label>
         )}
 
-        {protocol === 'webdav' && (
-          <>
-            <label className="flex flex-col gap-1 text-[13px]">
-              Server URL
-              <input
-                className={field}
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://host/remote.php/dav/files/user/"
-                required
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-[13px]">
-              Username
-              <input className={field} value={username} onChange={(e) => setUsername(e.target.value)} />
-            </label>
-            <label className="flex flex-col gap-1 text-[13px]">
-              Password
-              <input
-                type="password"
-                className={field}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="off"
-              />
-            </label>
-          </>
-        )}
-
-        {protocol === 's3' && (
-          <>
-            <label className="flex flex-col gap-1 text-[13px]">
-              Bucket
-              <input className={field} value={bucket} onChange={(e) => setBucket(e.target.value)} required />
-            </label>
-            <label className="flex flex-col gap-1 text-[13px]">
-              Region
-              <input className={field} value={region} onChange={(e) => setRegion(e.target.value)} required />
-            </label>
-            <label className="flex flex-col gap-1 text-[13px]">
-              Endpoint (optional, for S3-compatible services)
-              <input
-                className={field}
-                value={endpoint}
-                onChange={(e) => setEndpoint(e.target.value)}
-                placeholder="https://s3.us-east-1.amazonaws.com"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-[13px]">
-              Access key ID
-              <input className={field} value={accessKeyId} onChange={(e) => setAccessKeyId(e.target.value)} required />
-            </label>
-            <label className="flex flex-col gap-1 text-[13px]">
-              Secret access key
-              <input
-                type="password"
-                className={field}
-                value={secretAccessKey}
-                onChange={(e) => setSecretAccessKey(e.target.value)}
-                autoComplete="off"
-                required
-              />
-            </label>
-            <label className="flex items-center gap-2 text-[13px]">
-              <input type="checkbox" checked={forcePathStyle} onChange={(e) => setForcePathStyle(e.target.checked)} />
-              Use path-style URLs (MinIO / older S3-compatible servers)
-            </label>
-          </>
-        )}
-
         {canSave && (
           <>
             <label className="flex items-center gap-2 text-[13px]">
@@ -309,12 +208,6 @@ export function ConnectDialog() {
               Always prompt for password (don&apos;t store secret)
             </label>
           </>
-        )}
-
-        {!canSave && (
-          <div className="text-muted text-[11px]">
-            Saving is available for SFTP connections only right now; other protocols connect without saving.
-          </div>
         )}
 
         {localError && (

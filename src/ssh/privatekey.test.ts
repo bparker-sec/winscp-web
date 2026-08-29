@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ed25519 } from '@noble/curves/ed25519';
-import { parseOpenSshPrivateKey } from './privatekey';
+import { parseOpenSshPrivateKey, EncryptedKeyError } from './privatekey';
 
 // Throwaway fixture keys generated with:
 //   ssh-keygen -t ed25519 -N "" -f wsz_fixture -C fixture
@@ -62,10 +62,8 @@ describe('parseOpenSshPrivateKey', () => {
     expect(Array.from(pub)).toEqual(Array.from(parsed.publicKey));
   });
 
-  it('throws a clear error for an encrypted private key', () => {
-    expect(() => parseOpenSshPrivateKey(ENCRYPTED_PEM)).toThrow(
-      /Encrypted private keys are not supported yet/
-    );
+  it('throws EncryptedKeyError for an encrypted private key with no passphrase', () => {
+    expect(() => parseOpenSshPrivateKey(ENCRYPTED_PEM)).toThrow(EncryptedKeyError);
   });
 
   it('throws on malformed base64', () => {

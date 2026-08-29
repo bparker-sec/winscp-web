@@ -184,46 +184,37 @@ describe('ConnectDialog', () => {
     );
   });
 
-  it('switching protocol to S3 shows S3 fields and submits s3 creds', () => {
+  it('switching protocol to FTP hides the SFTP auth options and submits ftp creds', () => {
     const { remoteConnect } = setup();
     render(<ConnectDialog />);
 
     fireEvent.change(screen.getByText(/^protocol$/i).closest('label')!.querySelector('select')!, {
-      target: { value: 's3' },
+      target: { value: 'ftp' },
     });
-    // SSH host field is gone; S3 fields appear.
-    expect(screen.queryByText(/^host$/i)).toBeNull();
-    fireEvent.change(screen.getByText(/^bucket$/i).closest('label')!.querySelector('input')!, {
-      target: { value: 'mybucket' },
+    // No SSH key/auth-method radios for FTP; host/username/password remain.
+    expect(screen.queryByLabelText(/private key/i)).toBeNull();
+    fireEvent.change(screen.getByText(/^host$/i).closest('label')!.querySelector('input')!, {
+      target: { value: 'ftp.example.com' },
     });
-    fireEvent.change(screen.getByText(/access key id/i).closest('label')!.querySelector('input')!, {
-      target: { value: 'AKIA...' },
+    fireEvent.change(screen.getByText(/^username$/i).closest('label')!.querySelector('input')!, {
+      target: { value: 'bob' },
     });
-    fireEvent.change(screen.getByText(/secret access key/i).closest('label')!.querySelector('input')!, {
-      target: { value: 'secret' },
+    fireEvent.change(document.querySelector('input[type="password"]') as HTMLInputElement, {
+      target: { value: 'pw' },
     });
 
     fireEvent.click(screen.getByRole('button', { name: /connect$/i }));
     expect(remoteConnect).toHaveBeenCalledWith(
-      expect.objectContaining({ protocol: 's3', bucket: 'mybucket', accessKeyId: 'AKIA...', secretAccessKey: 'secret' }),
+      expect.objectContaining({ protocol: 'ftp', host: 'ftp.example.com', username: 'bob', password: 'pw' }),
     );
   });
 
-  it('switching protocol to WebDAV shows a URL field and submits webdav creds; save is hidden', () => {
-    const { remoteConnect } = setup();
+  it('only exposes SFTP and FTP in the protocol picker (WebDAV/S3 not wired into the GUI)', () => {
+    setup();
     render(<ConnectDialog />);
-
-    fireEvent.change(screen.getByText(/^protocol$/i).closest('label')!.querySelector('select')!, {
-      target: { value: 'webdav' },
-    });
-    expect(screen.queryByLabelText(/save this connection/i)).toBeNull();
-    fireEvent.change(screen.getByText(/server url/i).closest('label')!.querySelector('input')!, {
-      target: { value: 'https://dav.example.com/files/' },
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: /connect$/i }));
-    expect(remoteConnect).toHaveBeenCalledWith(
-      expect.objectContaining({ protocol: 'webdav', url: 'https://dav.example.com/files/' }),
+    const opts = [...(screen.getByText(/^protocol$/i).closest('label')!.querySelectorAll('option'))].map(
+      (o) => (o as HTMLOptionElement).value,
     );
+    expect(opts).toEqual(['sftp', 'ftp']);
   });
 });

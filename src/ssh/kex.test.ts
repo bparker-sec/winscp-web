@@ -64,7 +64,7 @@ describe('negotiate', () => {
 
 describe('computeExchangeHash', () => {
   it('matches an independently assembled sha256 over the exact field order', () => {
-    const vClient = new TextEncoder().encode('SSH-2.0-WinSCPWeb_0.1');
+    const vClient = new TextEncoder().encode('SSH-2.0-Skiff_1.0');
     const vServer = new TextEncoder().encode('SSH-2.0-OpenSSH_9.6');
     const iClient = buildKexInit(COOKIE);
     const iServer = buildKexInit(Uint8Array.from({ length: 16 }, (_, i) => 15 - i));

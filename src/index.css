@@ -37,6 +37,18 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Native <select> option popups don't inherit the app theme, so in dark mode
+   they render as unreadable dark-on-white. Force themed colors on the control
+   and its options (also sets the closed box background for consistency). */
+select {
+  background-color: var(--surface);
+  color: var(--text);
+}
+select option {
+  background-color: var(--surface);
+  color: var(--text);
+}
+
 /* Widget root rule: when embedded as a card, the app IS the card. */
 .widget-card {
   border-radius: 24px;
